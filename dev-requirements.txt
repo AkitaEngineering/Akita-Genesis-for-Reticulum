@@ -1,0 +1,7 @@
+# Development and Testing Tools
+pytest>=7.0.0
+pytest-cov>=3.0.0 # For test coverage
+flake8>=5.0.0     # Linter
+black>=23.0.0     # Code formatter
+isort>=5.10.0     # Import sorter
+mypy>=1.0.0       # Static type checker

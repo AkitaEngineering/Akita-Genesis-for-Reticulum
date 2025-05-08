@@ -174,7 +174,7 @@ Key settings include:
 
 ## Future Improvements
 
-(Refer to `docs/architecture.md` for difficulty assessment)
+(Refer to `docs/architecture.md`)
 
 * **Distributed Ledger:** Implement Raft/Paxos for the ledger for true fault tolerance.
 * **Robust State Sync:** Implement CRDTs or version vectors for state synchronization.

@@ -24,28 +24,6 @@
 * **Configuration:** Flexible configuration system using Pydantic settings, loadable from environment variables or `.env` files.
 * **Modular Design:** Organized into distinct Python modules for core functionalities.
 
-## Project Structure
-
-(A brief overview - refer to `docs/architecture.md` for details)
-
-```
-akita-genesis/
-├── akita_genesis/          # Main application package
-│   ├── cli/                # CLI logic
-│   ├── core/               # Core node logic (AkitaGenesisNode)
-│   ├── modules/            # Functional modules (Comm, Discovery, State, Tasks, etc.)
-│   ├── config/             # Configuration (settings.py)
-│   └── utils/              # Utilities (logging)
-├── docs/                   # Documentation (cli_usage.md, architecture.md)
-├── tests/                  # Unit/integration tests (to be developed)
-├── .gitignore
-├── LICENSE
-├── README.md
-├── requirements.txt
-├── dev-requirements.txt
-└── setup.py
-
-```
 ## Requirements
 
 * Python 3.8+
@@ -171,18 +149,6 @@ Key settings include:
 * Run linters/formatters: `flake8 .`, `black .`, `isort .`
 * Run type checker: `mypy akita_genesis`
 * Run tests (once implemented): `pytest`
-
-## Future Improvements
-
-(Refer to `docs/architecture.md`)
-
-* **Distributed Ledger:** Implement Raft/Paxos for the ledger for true fault tolerance.
-* **Robust State Sync:** Implement CRDTs or version vectors for state synchronization.
-* **Advanced Scheduling:** Task stealing, deadline scheduling.
-* **Security:** Secure RNS links, role-based access control (RBAC) for API.
-* **Fault Tolerance:** Enhanced handling of network partitions, more sophisticated retry strategies.
-* **Inter-Cluster Communication:** Define protocols for interaction between distinct Akita Genesis clusters.
-* **Web UI:** A web interface for monitoring and management.
 
 ## Contributing
 

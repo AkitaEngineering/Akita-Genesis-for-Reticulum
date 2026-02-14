@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, List, Tuple, Dict, Callable, Optional
 from concurrent.futures import Future # For returning results from queued operations
+import json
 
 # Use absolute imports within the package
 from akita_genesis.config.settings import settings
@@ -86,6 +87,10 @@ class DatabaseManager:
                 if sql == "STOP_THREAD_SENTINEL": 
                     op_future.set_result(True) # Signal completion of the sentinel processing
                     break # Exit the loop
+
+                if sql == "RUN_MIGRATION":
+                    self._apply_schema_migrations_sync(conn)
+                    continue
 
                 cursor = conn.cursor()
                 try:
@@ -219,10 +224,9 @@ class DatabaseManager:
                 last_seen REAL NOT NULL,             -- Unix timestamp
                 is_leader BOOLEAN DEFAULT FALSE,
                 resources TEXT,                      -- JSON string of resource info (cpu, mem, etc.)
-                status TEXT DEFAULT 'online'         -- e.g., online, offline, degraded
-                -- Add columns for capabilities and task count if they need persistence:
-                -- capabilities TEXT,              -- JSON list of strings
-                -- current_task_count INTEGER DEFAULT 0 
+                status TEXT DEFAULT 'online',        -- e.g., online, offline, degraded
+                capabilities TEXT,                   -- JSON list of capability strings
+                current_task_count INTEGER DEFAULT 0 -- Number of tasks currently assigned (persisted)
             );
             """,
             "CREATE INDEX IF NOT EXISTS idx_cluster_nodes_cluster_name ON cluster_nodes (cluster_name);",
@@ -254,8 +258,78 @@ class DatabaseManager:
             else:
                 log.info("Database schema initialization/verification completed successfully.")
         final_future.add_done_callback(log_schema_init_done)
-        
+
+        # After schema creation finishes, run any post-init migrations (idempotent)
+        final_future.add_done_callback(lambda f: self._db_queue.put(("RUN_MIGRATION", (), None, None)))
+
         return final_future # Return the future representing the completion of the last statement
+
+
+    def _apply_schema_migrations_sync(self, conn):
+        """Idempotent post-schema migrations to bring older DB files up-to-date.
+
+        Runs synchronously in the DB thread.
+        """
+        try:
+            # 1) Inspect current table columns
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(cluster_nodes);")
+            cols = cur.fetchall()
+            existing_cols = [r[1] for r in cols] if cols else []
+
+            # 2) Add missing columns (safe: only when absent)
+            if "capabilities" not in existing_cols:
+                log.info("Applying migration: adding 'capabilities' column to cluster_nodes")
+                conn.execute("ALTER TABLE cluster_nodes ADD COLUMN capabilities TEXT;")
+            if "current_task_count" not in existing_cols:
+                log.info("Applying migration: adding 'current_task_count' column to cluster_nodes")
+                conn.execute("ALTER TABLE cluster_nodes ADD COLUMN current_task_count INTEGER DEFAULT 0;")
+
+            # 3) Backfill values from resources JSON where possible
+            # Select rows that have resources and either NULL/empty capabilities or zero task count
+            cur.execute("SELECT node_id, resources, capabilities, current_task_count FROM cluster_nodes WHERE resources IS NOT NULL")
+            rows = cur.fetchall()
+            for row in rows:
+                try:
+                    # sqlite3.Row may support dict-like access, handle both
+                    node_id = row[0]
+                    resources_text = row[1]
+                except Exception:
+                    # Fallback positional access
+                    node_id = row[0]
+                    resources_text = row[1]
+
+                try:
+                    res = json.loads(resources_text) if resources_text else {}
+                except Exception:
+                    res = {}
+
+                caps = res.get('capabilities') if isinstance(res.get('capabilities'), list) else None
+                cnt = res.get('current_task_count')
+
+                # Only update if there is something meaningful to write
+                if caps is not None or (cnt is not None and int(cnt) != 0):
+                    upd_caps = json.dumps(caps) if caps is not None else None
+                    upd_cnt = int(cnt) if cnt is not None else None
+                    # Build dynamic UPDATE depending on which values exist
+                    updates = []
+                    params: List[Any] = []
+                    if upd_caps is not None:
+                        updates.append("capabilities = ?")
+                        params.append(upd_caps)
+                    if upd_cnt is not None:
+                        updates.append("current_task_count = ?")
+                        params.append(int(upd_cnt))
+                    params.append(node_id)
+                    sql = f"UPDATE cluster_nodes SET {', '.join(updates)} WHERE node_id = ?"
+                    try:
+                        conn.execute(sql, tuple(params))
+                    except Exception as e:
+                        log.warning(f"Failed to backfill migration data for node {node_id}: {e}")
+
+            log.info("Schema migrations (if any) applied to cluster_nodes.")
+        except Exception as e:
+            log.error(f"Error while applying schema migrations for cluster_nodes: {e}", exc_info=True)
 
 
     def close(self):
@@ -298,7 +372,6 @@ class DatabaseManager:
                 break
             self._db_queue.task_done()
         log.info("DatabaseManager closed.")
-
 # --- Global Instance & Cleanup ---
 # Create the singleton instance when the module is imported
 db_manager = DatabaseManager(settings.SQLITE_DB_FILE)

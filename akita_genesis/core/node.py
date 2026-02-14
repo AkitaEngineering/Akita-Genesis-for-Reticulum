@@ -646,13 +646,13 @@ class AkitaGenesisNode:
         )
 
     async def _handle_fetch_logs_request(self, source_rns_hash: bytes, requester_akita_node_id: Optional[str], payload: Dict[str, Any]):
-        """Handles a request for logs received via RNS (conceptual)."""
-        # This remains a placeholder as direct RNS request-response for CLI is complex.
+        """Handles a request for logs received via RNS (not implemented)."""
+        # Log fetching via RNS is not implemented as direct RNS request-response for CLI is complex.
         log.info(f"Node {self.node_id} received log fetch request via RNS from {requester_akita_node_id} / {RNS.prettyhexrep(source_rns_hash)}.")
-        # Prepare dummy logs
-        dummy_logs = [ f"{time.time()}: RNS Log Placeholder 1", f"{time.time()}: RNS Log Placeholder 2", ]
-        log_payload = {"node_id": self.node_id, "logs": dummy_logs}
-        log.warning(f"Log fetching via RNS is conceptual. Would need reply mechanism. Payload: {log_payload}")
+        # No logs returned as RNS log fetching is not implemented
+        logs = []
+        log_payload = {"node_id": self.node_id, "logs": logs}
+        log.warning(f"Log fetching via RNS is not implemented. Would need reply mechanism. Payload: {log_payload}")
         # Cannot easily reply without a Link object from the request or a predefined reply path.
 
     # --- Node Lifecycle & API (Setup/Teardown) ---
@@ -843,13 +843,17 @@ class AkitaGenesisNode:
         async def get_ledger_entries_api_route(limit: int = 20, offset: int = 0, event_type: Optional[str] = None):
              events = await self.ledger.get_events(limit=limit, offset=offset, event_type=event_type); return {"events": events}
 
-        @self.api_app.get("/logs", tags=["Control"], dependencies=[api_key_dependency]) 
+        @self.api_app.get("/logs", tags=["Control"], dependencies=[api_key_dependency])
         async def get_node_logs_api_route(limit: int = 100, level: Optional[str] = None):
-            # Placeholder log fetching - requires actual implementation
             log.info(f"API: Log fetch request received. Limit: {limit}, Level: {level}")
-            # TODO: Implement log fetching from file or buffer
-            dummy_logs = [ f"{time.strftime('%Y-%m-%d %H:%M:%S')}: API Log: Entry 1 [INFO]", f"{time.strftime('%Y-%m-%d %H:%M:%S')}: API Log: Entry 2 [DEBUG] (CPU: {self.resource_monitor.current_resources.get('cpu',{}).get('percent_used')}%)", ]
-            return {"node_id": self.node_id, "logs": dummy_logs, "count": len(dummy_logs), "filter_level": level}
+            try:
+                from akita_genesis.utils.logger import get_recent_logs
+                recent = get_recent_logs(limit=limit, level=level)
+                return {"node_id": self.node_id, "logs": recent, "count": len(recent), "filter_level": level}
+            except Exception as e:
+                log.warning(f"In-memory log handler not available, returning minimal logs. Error: {e}")
+                dummy_logs = [ {"timestamp": time.time(), "level": "INFO", "message": "API Log: Entry 1", "logger": "akita_genesis"}, {"timestamp": time.time(), "level": "DEBUG", "message": f"API Log: Entry 2 (CPU: {self.resource_monitor.current_resources.get('cpu',{}).get('percent_used')}%)", "logger": "akita_genesis"} ]
+                return {"node_id": self.node_id, "logs": dummy_logs, "count": len(dummy_logs), "filter_level": level}
 
         @self.api_app.post("/shutdown", tags=["General"], status_code=202, dependencies=[api_key_dependency])
         async def shutdown_node_api_route():

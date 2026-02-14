@@ -26,6 +26,7 @@ class AppSettings(BaseSettings):
     APP_NAME_SHORT: str = Field(default="akitagen", description="Short name for Reticulum app identification, max 10 chars, no spaces/special chars.")
     APP_VERSION: str = Field(default="0.1.0-alpha", description="Application version.") # Added version
     LOG_LEVEL: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
+    LOG_FILE_PATH: Optional[Path] = Field(default=None, description="Path to log file. If set, logs will be written to file.")
     SQLITE_DB_FILE: Path = Field(default=BASE_DIR / "akita_genesis_data" / "akita_ledger.db", description="Path to the SQLite database file.")
     DATA_DIR: Path = Field(default=BASE_DIR / "akita_genesis_data", description="Directory to store persistent data like identities and DB.")
 
@@ -35,6 +36,7 @@ class AppSettings(BaseSettings):
     CLUSTER_SIZE: int = Field(default=3, ge=1, description="Minimum desired number of nodes to form a functional cluster.")
     NODE_TIMEOUT_S: int = Field(default=180, ge=30, description="Seconds before a non-responsive node is considered stale or offline.")
     LEADER_ELECTION_TIMEOUT_S: int = Field(default=15, ge=5, description="Timeout for leader election rounds.")
+    TASK_TIMEOUT_S: int = Field(default=300, ge=60, description="Seconds before an ASSIGNED task is considered timed out and can be reassigned.")
 
     # Reticulum & Network Settings
     DISCOVERY_INTERVAL_S: int = Field(default=30, ge=5, description="Interval (in seconds) for node discovery broadcasts.")

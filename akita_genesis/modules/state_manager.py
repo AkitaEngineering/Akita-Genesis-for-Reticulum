@@ -14,6 +14,8 @@ from akita_genesis.modules.ledger import Ledger, EventType
 # Assuming future_to_task helper or asyncio.wrap_future is used for DB calls
 # from .ledger import future_to_task 
 from akita_genesis.modules.resources import ResourceMonitor 
+from akita_genesis.modules.tasks import TaskStatus
+from akita_genesis.modules.communication import AppAspect
 
 log = setup_logger(__name__)
 
@@ -497,8 +499,18 @@ class StateManager:
             my_node_info.last_seen = time.time() 
             my_node_info.resources = self.resource_monitor.current_resources 
             my_node_info.is_leader = (self.local_cluster_state.leader_id == self.node_id)
-            # Update task count if needed
-            # my_node_info.current_task_count = ... 
+            # Update task count from DB to ensure accurate value (handles restarts / cache misses)
+            try:
+                future = self.db.execute(
+                    "SELECT COUNT(*) AS cnt FROM tasks WHERE assigned_to_node_id = ? AND status IN (?,?,?)",
+                    (self.node_id, str(TaskStatus.ASSIGNED), str(TaskStatus.WORKER_ACK), str(TaskStatus.PROCESSING))
+                )
+                rows = await asyncio.wrap_future(future)
+                if rows and rows[0]:
+                    # sqlite3.Row supports column name access
+                    my_node_info.current_task_count = int(rows[0]["cnt"]) if "cnt" in rows[0].keys() else int(rows[0][0])
+            except Exception as e:
+                log.debug(f"Could not compute current_task_count from DB: {e}")
             await self.local_cluster_state.update_node(my_node_info) # Update cache
         
         # Get the current state dictionary
@@ -697,9 +709,11 @@ class StateManager:
         if self._on_state_change_callback:
             log.debug("Triggering on_state_change_callback.")
             try:
-                # Pass a copy of the state to the callback
-                state_copy = self.local_cluster_state # Or create a deep copy if needed
-                await self._on_state_change_callback(state_copy)
+                # Create lightweight snapshots to pass to the callback to avoid races
+                state_snapshot = await self.local_cluster_state.get_all_nodes()
+                leader_snapshot = await self.local_cluster_state.get_leader()
+                payload = {"nodes": state_snapshot, "leader": leader_snapshot}
+                await self._on_state_change_callback(payload)
             except Exception as e:
                 log.error(f"Error in on_state_change_callback: {e}", exc_info=True)
 
@@ -822,7 +836,7 @@ class StateManager:
         log.debug("Loading initial state from database...")
         # Define SQL query, including potential new columns for capabilities/task count if persisted
         sql = """SELECT node_id, node_name, cluster_name, address_hex, last_seen, is_leader, 
-                        resources, status -- , capabilities, current_task_count -- Add if persisted
+                        resources, status, capabilities, current_task_count
                  FROM cluster_nodes WHERE cluster_name = ?"""
         try:
             # Execute query via DB manager
@@ -833,21 +847,39 @@ class StateManager:
             for row in rows:
                 try:
                     # Parse row data into NodeInfo object
+                    resources_parsed = json.loads(row["resources"]) if row["resources"] else None
+                    # Prefer explicit columns (capabilities/current_task_count) when present, fall back to resources JSON
+                    capabilities_from_db = []
+                    current_task_count_from_db = 0
+                    try:
+                        # If DB returned explicit columns, use them
+                        if row.get("capabilities"):
+                            capabilities_from_db = json.loads(row.get("capabilities")) if row.get("capabilities") else []
+                        elif resources_parsed:
+                            capabilities_from_db = resources_parsed.get("capabilities", [])
+                        if row.get("current_task_count") is not None:
+                            current_task_count_from_db = int(row.get("current_task_count") or 0)
+                        elif resources_parsed:
+                            current_task_count_from_db = int(resources_parsed.get("current_task_count", 0))
+                    except Exception:
+                        # Be robust to malformed DB values
+                        capabilities_from_db = capabilities_from_db or []
+                        current_task_count_from_db = int(current_task_count_from_db or 0)
+
                     node_info = NodeInfo(
                         node_id=row["node_id"], node_name=row["node_name"], cluster_name=row["cluster_name"],
                         address_hex=row["address_hex"], last_seen=row["last_seen"], is_leader=bool(row["is_leader"]),
                         status=NodeStatus(row["status"] or "unknown"),
-                        resources=json.loads(row["resources"]) if row["resources"] else None,
-                        # Load capabilities and task count if they were added to schema/query
-                        # capabilities=json.loads(row["capabilities"]) if row.get("capabilities") else [], 
-                        # current_task_count=row.get("current_task_count", 0) 
+                        resources=resources_parsed,
+                        capabilities=capabilities_from_db,
+                        current_task_count=current_task_count_from_db,
                     )
                     # Update the local state cache with loaded info
                     await self.local_cluster_state.update_node(node_info)
-                    nodes_loaded_count +=1
-                except (pydantic.ValidationError, json.JSONDecodeError, ValueError, KeyError) as e: 
+                    nodes_loaded_count += 1
+                except (pydantic.ValidationError, json.JSONDecodeError, ValueError, KeyError) as e:
                     # Handle potential errors during parsing or if columns are missing
-                    log.warning(f"Failed to load node {row['node_id']} from DB due to parsing error: {e}")
+                    log.warning(f"Failed to load node {row.get('node_id', 'UNKNOWN')} from DB due to parsing error: {e}")
             log.info(f"Loaded {nodes_loaded_count} nodes from database for cluster {self.cluster_name}.")
         except Exception as e:
             log.error(f"Error loading initial state from database: {e}", exc_info=True)
@@ -862,19 +894,22 @@ class StateManager:
         # Include capabilities and task count if they are part of the schema
         sql = """
             INSERT OR REPLACE INTO cluster_nodes 
-            (node_id, node_name, cluster_name, address_hex, last_seen, is_leader, resources, status --, capabilities, current_task_count -- Add if persisted
-            ) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ? --, ?, ? -- Add placeholders if persisted
-            ) 
-        """ 
+            (node_id, node_name, cluster_name, address_hex, last_seen, is_leader, resources, status, capabilities, current_task_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        # Prepare resources payload and explicit capability/task-count columns
+        resources_for_db = dict(node_info.resources) if node_info.resources else {}
+        resources_for_db["capabilities"] = node_info.capabilities or []
+        resources_for_db["current_task_count"] = int(node_info.current_task_count or 0)
+
         params = (
             node_info.node_id, node_info.node_name, node_info.cluster_name,
             node_info.address_hex, node_info.last_seen,
             1 if node_info.is_leader else 0, # Convert boolean to integer for SQLite
-            json.dumps(node_info.resources) if node_info.resources else None, # Serialize resources dict
-            str(node_info.status) # Store enum as string
-            # json.dumps(node_info.capabilities), # Serialize capabilities list if persisted
-            # node_info.current_task_count # Store task count if persisted
+            json.dumps(resources_for_db), # Serialize resources dict including capabilities/task_count
+            str(node_info.status),
+            json.dumps(node_info.capabilities or []),
+            int(node_info.current_task_count or 0),
         )
         try:
             # Queue the database operation

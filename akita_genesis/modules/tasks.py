@@ -360,19 +360,18 @@ class TaskManager:
         Returns:
             A list of Task objects ready for assignment.
         """
-        # Select tasks that are either newly submitted (PENDING) or accepted by leader but not yet assigned (ACCEPTED)
+        # Select tasks that are either newly submitted (PENDING), accepted by leader but not yet assigned (ACCEPTED),
+        # or ASSIGNED but timed out (worker didn't ACK in time)
+        timeout_time = time.time() - settings.TASK_TIMEOUT_S
         sql = """
             SELECT id, submit_time, priority, data, status, assigned_to_node_id, 
                    result, last_updated, submitted_by_node_id, execution_attempts
             FROM tasks
-            WHERE status = ? OR status = ? 
+            WHERE (status = ? OR status = ?) OR (status = ? AND last_updated < ?)
             ORDER BY priority ASC, submit_time ASC
             LIMIT ?
         """
-        params = (str(TaskStatus.PENDING), str(TaskStatus.ACCEPTED), limit)
-        
-        # TODO: Consider adding logic to also fetch tasks that were ASSIGNED but timed out (e.g., worker never ACKed)
-        # This would involve checking last_updated time against a timeout threshold.
+        params = (str(TaskStatus.PENDING), str(TaskStatus.ACCEPTED), str(TaskStatus.ASSIGNED), timeout_time, limit)
 
         try:
             future = self.db.execute(sql, params)

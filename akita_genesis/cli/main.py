@@ -436,8 +436,38 @@ def logs_cmd(ctx, limit, level, follow):
     log_highlighter = LogHighlighter()
 
     if follow:
-        console.print("[yellow]Log following (-f) is not yet implemented. Fetching recent logs instead.[/yellow]")
-        # TODO: Implement log following using WebSockets or Server-Sent Events if API supports it.
+        console.print("[green]Following logs (polling every 1s). Press Ctrl+C to stop.[/green]")
+        last_ts = 0.0
+        try:
+            while True:
+                poll_result = make_api_request(ctx, "GET", endpoint)
+                entries = poll_result.get("logs", [])
+                # Normalize and print only new entries
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        ts = entry.get("timestamp")
+                        # Accept numeric timestamps or string timestamps
+                        try:
+                            ts_val = float(ts)
+                        except Exception:
+                            try:
+                                ts_val = time.mktime(time.strptime(str(ts), "%Y-%m-%d %H:%M:%S"))
+                            except Exception:
+                                ts_val = time.time()
+                        if ts_val <= last_ts:
+                            continue
+                        last_ts = max(last_ts, ts_val)
+                        level_name = (entry.get("level") or "INFO").upper()
+                        ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts_val))
+                        msg = f"{ts_str} [{level_name}] {entry.get('logger','')}: {entry.get('message','')}"
+                        console.print(log_highlighter(msg), style=f"log.level.{level_name}")
+                    else:
+                        # Fallback for legacy string-format logs
+                        console.print(log_highlighter(entry))
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            console.print("[yellow]Stopped following logs.[/yellow]")
+            return
 
     endpoint = f"/logs?limit={limit}"
     if level:
@@ -457,18 +487,26 @@ def logs_cmd(ctx, limit, level, follow):
         console.print(Panel(f"[yellow]No log entries returned from node {node_id_logs}.[/yellow]", title=f"Logs from {node_id_logs}", expand=False))
         return
 
-    # Print logs with highlighting
+    # Print logs with highlighting (support structured entries)
     console.print(Panel(f"Displaying last {len(log_entries)} log entries from node [bold cyan]{node_id_logs}[/bold cyan]", title="Node Logs"))
     for entry in log_entries:
-        # Basic coloring for log levels if they are present in the string
-        level_match = re.search(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", entry)
-        style = ""
-        if level_match:
-            level_name = level_match.group(1)
-            style = f"log.level.{level_name}" # Use theme style like log.level.INFO
-        
-        # Print with highlighter and potential level style
-        console.print(log_highlighter(entry), style=style)
+        if isinstance(entry, dict):
+            ts = entry.get('timestamp')
+            if isinstance(ts, (int, float)):
+                ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts))
+            else:
+                ts_str = str(ts)
+            level_name = (entry.get('level') or 'INFO').upper()
+            msg = f"{ts_str} [{level_name}] {entry.get('logger','')}: {entry.get('message','')}"
+            style = f"log.level.{level_name}" if level_name else ""
+            console.print(log_highlighter(msg), style=style)
+        else:
+            level_match = re.search(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", entry)
+            style = ""
+            if level_match:
+                level_name = level_match.group(1)
+                style = f"log.level.{level_name}"
+            console.print(log_highlighter(entry), style=style)
 
 
 # shutdown command (API call uses key from context)

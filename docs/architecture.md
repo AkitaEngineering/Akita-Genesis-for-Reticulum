@@ -11,8 +11,9 @@ Akita Genesis is designed as a modular framework for building distributed system
 * **Task Management:** A distributed task queue where tasks are submitted to the cluster, assigned to worker nodes by a leader based on load and capabilities, and processed.
 * **State Management:** Mechanisms for nodes within a cluster to maintain a reasonably consistent view of the cluster's state (nodes, leader).
 * **Observability:** Providing status information, logs, and a ledger of events via a CLI and node API.
-* **Basic Security:** API access control via API keys.
+* **Security:** API access control via API keys, HTTPS transport, and optional mutual TLS.
 * **Fault Tolerance:** Task retry mechanisms and node timeout detection.
+* **Linux Operations:** Built-in liveness/readiness probes for service managers and orchestrators.
 
 ## Main Components
 
@@ -22,7 +23,7 @@ The system is primarily composed of modules running within each `AkitaGenesisNod
     * The central orchestrator class for a single node.
     * Initializes and manages the lifecycle of all other modules.
     * Runs the main asyncio event loop for the node.
-    * Hosts the FastAPI server for external API interactions (CLI, UI), **secured with API key authentication**.
+    * Hosts the FastAPI server for external API interactions (CLI, UI), **secured with API keys and optional TLS/mTLS**.
     * Handles role-specific logic (leader vs. follower duties).
     * **Leader:** Implements task assignment logic considering worker load, resources, and **task capabilities**. Manages task timeouts and retries.
     * **Worker:** Handles receiving task assignments, acknowledging them, simulating processing, and sending results back to the leader.
@@ -77,7 +78,13 @@ The system is primarily composed of modules running within each `AkitaGenesisNod
     * Provides a high-information UX for dashboards, cluster members, task submission, live logs, and runtime configuration.
 
 11. **`config.settings`:**
-    * Manages configuration, including **`VALID_API_KEYS`** (comma-separated or JSON-array env input), **`MAX_TASK_EXECUTION_ATTEMPTS`**, and worker timeouts.
+    * Manages configuration, including **`VALID_API_KEYS`** (comma-separated or JSON-array env input), TLS settings (`API_TLS_CERT_FILE`, `API_TLS_KEY_FILE`, `API_TLS_CA_FILE`, `API_TLS_REQUIRE_CLIENT_CERT`), **`MAX_TASK_EXECUTION_ATTEMPTS`**, and worker timeouts.
+
+12. **Optional Akita DDNS bridge (`cli.main`):**
+    * Integrates with the external Akita Dynamic DDNS project through subprocess execution (`python -m akita_ddns.main`).
+    * Supports DDNS register/resolve/list workflows from Akita Genesis CLI.
+    * Includes `ddns register-node`, which pulls `rns_identity_hex` from `/status` and publishes it as a DDNS name.
+    * Remains optional to avoid forcing hard dependency coupling to an external repository without package metadata.
 
 ## UI Security Model
 
@@ -86,6 +93,7 @@ The node now separates the UI shell from the secured data plane:
 * `/ui` and `/ui/assets/*` are public so a browser can load the shell without custom headers during navigation.
 * Data and control endpoints remain protected by API-key validation when `VALID_API_KEYS` is configured.
 * The browser UI prompts for a key and sends it in the configured header for subsequent fetches.
+* The node exposes `/healthz` (liveness) and `/readyz` (readiness) for Linux service supervision.
 
 ## Communication Flow (Example: Task Submission & Execution - Updated)
 

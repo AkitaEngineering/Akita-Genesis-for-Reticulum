@@ -2,6 +2,7 @@
 import json
 import asyncio
 import signal
+import ssl
 import time
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ import RNS # type: ignore[import-untyped] # For Reticulum operations and types
 # FastAPI and Uvicorn for the control API
 from fastapi import FastAPI, HTTPException, Body, Depends, Security # Added Depends, Security
 from fastapi.security.api_key import APIKeyHeader # For API Key security
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -53,6 +54,12 @@ def _coerce_task_priority(priority: Any, source: str) -> int:
             f"Invalid task priority received from {source}: {priority}. Using default {settings.DEFAULT_TASK_PRIORITY}."
         )
         return settings.DEFAULT_TASK_PRIORITY
+
+
+def _normalize_optional_path(path_value: Any) -> Optional[str]:
+    if path_value in (None, ""):
+        return None
+    return str(path_value)
 
 async def get_api_key(api_key: str = Security(api_key_header)):
     """
@@ -100,6 +107,10 @@ class AkitaGenesisNode:
         rns_port: Optional[int] = None, 
         run_api_server: bool = True,
         capabilities: Optional[List[str]] = None, # Node capabilities for scheduling
+        api_tls_certfile: Optional[str] = None,
+        api_tls_keyfile: Optional[str] = None,
+        api_tls_ca_file: Optional[str] = None,
+        api_tls_require_client_cert: Optional[bool] = None,
     ):
         """
         Initializes the Akita Genesis Node instance.
@@ -113,6 +124,10 @@ class AkitaGenesisNode:
             rns_port: Specific UDP port for Reticulum Transport. Defaults to None (RNS default).
             run_api_server: Whether to start the FastAPI control API server. Defaults to True.
             capabilities: List of strings representing node capabilities (e.g., ['gpu', 'fast_io']).
+            api_tls_certfile: PEM certificate file for serving the control API over HTTPS.
+            api_tls_keyfile: PEM private key file for serving the control API over HTTPS.
+            api_tls_ca_file: CA bundle for validating client certificates.
+            api_tls_require_client_cert: Require a trusted client certificate when HTTPS is enabled.
         """
         # --- Node Identification and Configuration ---
         self.node_id: str = self._generate_node_id() # Unique internal ID for this Akita node
@@ -135,6 +150,19 @@ class AkitaGenesisNode:
         self.api_host = api_host or settings.DEFAULT_API_HOST
         self.api_port = api_port or settings.DEFAULT_API_PORT
         self.run_api_server = run_api_server
+        self.api_tls_certfile = _normalize_optional_path(api_tls_certfile or settings.API_TLS_CERT_FILE)
+        self.api_tls_keyfile = _normalize_optional_path(api_tls_keyfile or settings.API_TLS_KEY_FILE)
+        self.api_tls_ca_file = _normalize_optional_path(api_tls_ca_file or settings.API_TLS_CA_FILE)
+        self.api_tls_require_client_cert = (
+            settings.API_TLS_REQUIRE_CLIENT_CERT
+            if api_tls_require_client_cert is None
+            else api_tls_require_client_cert
+        )
+        if bool(self.api_tls_certfile) != bool(self.api_tls_keyfile):
+            raise ValueError("Control API TLS requires both a certificate file and a private key file.")
+        if self.api_tls_require_client_cert and not self.api_tls_certfile:
+            raise ValueError("Mutual TLS requires HTTPS to be enabled with both certificate and key files.")
+        self.api_scheme = "https" if self.api_tls_certfile and self.api_tls_keyfile else "http"
         self._webui_root = Path(__file__).resolve().parent.parent / "webui"
 
         # --- Async Control and State ---
@@ -191,7 +219,7 @@ class AkitaGenesisNode:
         self._register_message_handlers() # Register handlers for incoming RNS messages
 
         log.info(f"Node {self.node_name} initialized. RNS Identity Path: {self.identity_path}")
-        log.info(f"API server (secured: {bool(settings.VALID_API_KEYS)}) will run on: http://{self.api_host}:{self.api_port}")
+        log.info(f"API server (secured: {bool(settings.VALID_API_KEYS)}) will run on: {self.api_scheme}://{self.api_host}:{self.api_port}")
 
     def _generate_node_id(self) -> str:
         """Generates a unique (short) ID for the node instance."""
@@ -228,6 +256,10 @@ class AkitaGenesisNode:
             "apiKeyHeaderName": settings.API_KEY_HEADER_NAME,
             "apiSecured": bool(settings.VALID_API_KEYS),
             "configuredApiKeyCount": len(settings.VALID_API_KEYS),
+            "transportSecurity": {
+                "tlsEnabled": self.api_scheme == "https",
+                "mutualTlsRequired": self.api_tls_require_client_cert,
+            },
             "defaultRefreshMs": 5000,
         }
 
@@ -258,6 +290,7 @@ class AkitaGenesisNode:
                 "run_api_server": self.run_api_server,
             },
             "network": {
+                "api_scheme": self.api_scheme,
                 "api_host": self.api_host,
                 "api_port": self.api_port,
                 "default_rns_port": settings.DEFAULT_RNS_PORT,
@@ -284,12 +317,41 @@ class AkitaGenesisNode:
                 "api_secured": bool(settings.VALID_API_KEYS),
                 "api_key_header_name": settings.API_KEY_HEADER_NAME,
                 "configured_api_key_count": len(settings.VALID_API_KEYS),
+                "tls_enabled": self.api_scheme == "https",
+                "tls_certfile": self.api_tls_certfile,
+                "tls_keyfile_configured": bool(self.api_tls_keyfile),
+                "tls_ca_file": self.api_tls_ca_file,
+                "mutual_tls_required": self.api_tls_require_client_cert,
             },
             "storage": {
                 "data_dir": str(settings.DATA_DIR),
                 "sqlite_db_file": str(settings.SQLITE_DB_FILE),
                 "log_file_path": str(settings.LOG_FILE_PATH) if settings.LOG_FILE_PATH else None,
             },
+        }
+
+    async def _build_readiness_snapshot(self) -> Dict[str, Any]:
+        """Builds a lightweight readiness payload for probes and service managers."""
+        leader_id = await self.state_manager.get_current_leader_id()
+        local_node_info = await self.state_manager.local_cluster_state.get_node(self.node_id)
+        checks = {
+            "storage_initialized": bool(getattr(db_manager, "_initialized", False)),
+            "communication_ready": self.communication_manager is not None,
+            "state_manager_ready": self.state_manager is not None,
+            "tls_configuration_valid": not (bool(self.api_tls_certfile) ^ bool(self.api_tls_keyfile)),
+        }
+        ready = all(checks.values())
+        return {
+            "ready": ready,
+            "status": "ready" if ready else "degraded",
+            "node_id": self.node_id,
+            "node_name": self.node_name,
+            "cluster_name": self.cluster_name,
+            "leader_known": leader_id is not None,
+            "current_leader_id": leader_id,
+            "local_status": self._normalize_node_status(local_node_info.status if local_node_info else None),
+            "api_scheme": self.api_scheme,
+            "checks": checks,
         }
 
     async def _build_dashboard_summary(self) -> Dict[str, Any]:
@@ -350,6 +412,7 @@ class AkitaGenesisNode:
                 "current_task_count": local_node_info.current_task_count if local_node_info else 0,
                 "uptime_seconds": time.time() - self.start_time,
                 "resources": node_resources,
+                "api_scheme": self.api_scheme,
                 "api_host": self.api_host,
                 "api_port": self.api_port,
             },
@@ -358,6 +421,8 @@ class AkitaGenesisNode:
                 "current_leader_id": leader_id,
                 "total_nodes_known": len(nodes_info),
                 "online_nodes_count": status_counts.get(str(StateNodeStatus.ONLINE), 0),
+                "degraded_nodes_count": status_counts.get(str(StateNodeStatus.DEGRADED), 0),
+                "offline_nodes_count": status_counts.get(str(StateNodeStatus.OFFLINE), 0),
                 "status_counts": status_counts,
                 "available_worker_count": len(available_workers),
                 "capability_counts": dict(
@@ -376,11 +441,18 @@ class AkitaGenesisNode:
                 "api_secured": bool(settings.VALID_API_KEYS),
                 "api_key_header_name": settings.API_KEY_HEADER_NAME,
                 "configured_api_key_count": len(settings.VALID_API_KEYS),
+                "tls_enabled": self.api_scheme == "https",
+                "tls_certfile": self.api_tls_certfile,
+                "tls_keyfile_configured": bool(self.api_tls_keyfile),
+                "tls_ca_file": self.api_tls_ca_file,
+                "mutual_tls_required": self.api_tls_require_client_cert,
             },
             "links": {
                 "ui": "/ui",
                 "docs": "/docs",
                 "openapi": "/openapi.json",
+                "healthz": "/healthz",
+                "readyz": "/readyz",
             },
         }
 
@@ -924,13 +996,26 @@ class AkitaGenesisNode:
             uvicorn_log_level = settings.LOG_LEVEL.lower()
             if uvicorn_log_level == "trace": uvicorn_log_level = "debug" 
 
-            config = uvicorn.Config(self.api_app, host=self.api_host, port=self.api_port, log_level=uvicorn_log_level)
+            uvicorn_kwargs: Dict[str, Any] = {
+                "host": self.api_host,
+                "port": self.api_port,
+                "log_level": uvicorn_log_level,
+            }
+            if self.api_scheme == "https":
+                uvicorn_kwargs["ssl_certfile"] = self.api_tls_certfile
+                uvicorn_kwargs["ssl_keyfile"] = self.api_tls_keyfile
+                if self.api_tls_ca_file:
+                    uvicorn_kwargs["ssl_ca_certs"] = self.api_tls_ca_file
+                if self.api_tls_require_client_cert:
+                    uvicorn_kwargs["ssl_cert_reqs"] = ssl.CERT_REQUIRED
+
+            config = uvicorn.Config(self.api_app, **uvicorn_kwargs)
             # Store server instance if possible for graceful shutdown
             server = uvicorn.Server(config) 
             # Keep reference for potential shutdown signalling
             self._uvicorn_server_instance = server # type: ignore 
             self._api_server_task = asyncio.create_task(server.serve())
-            log.info(f"HTTP API server started on http://{self.api_host}:{self.api_port}")
+            log.info(f"HTTP API server started on {self.api_scheme}://{self.api_host}:{self.api_port}")
 
         log.info(f"Node {self.node_name} (RNS: {self.communication_manager.get_node_identity_hex()}) started successfully.")
         # Start the main operational loop
@@ -1014,6 +1099,24 @@ class AkitaGenesisNode:
         @self.api_app.get("/dashboard", include_in_schema=False)
         async def redirect_dashboard_route():
             return RedirectResponse(url="/ui", status_code=307)
+
+        @self.api_app.get("/healthz", tags=["General"], include_in_schema=False)
+        async def get_healthz_route():
+            return {
+                "status": "alive",
+                "node_id": self.node_id,
+                "node_name": self.node_name,
+                "cluster_name": self.cluster_name,
+                "uptime_seconds": time.time() - self.start_time,
+                "api_scheme": self.api_scheme,
+            }
+
+        @self.api_app.get("/readyz", tags=["General"], include_in_schema=False)
+        async def get_readyz_route():
+            readiness = await self._build_readiness_snapshot()
+            if readiness["ready"]:
+                return readiness
+            return JSONResponse(status_code=503, content=readiness)
 
         # Apply dependency to all routes defined below
         # Use unique function names for API route handlers

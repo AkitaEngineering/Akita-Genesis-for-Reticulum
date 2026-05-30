@@ -72,3 +72,45 @@ def test_cluster_status_counts_online_nodes_correctly():
     assert payload["online_nodes_count"] == 1
     assert payload["offline_nodes_count"] == 1
     assert payload["status_counts"]["online"] == 1
+
+
+def test_health_and_ready_routes_are_public():
+    node = AkitaGenesisNode(run_api_server=False)
+    client = TestClient(node.api_app)
+
+    health_response = client.get("/healthz")
+    ready_response = client.get("/readyz")
+
+    assert health_response.status_code == 200
+    assert ready_response.status_code == 200
+    assert health_response.json()["status"] == "alive"
+    assert ready_response.json()["ready"] is True
+    assert ready_response.json()["api_scheme"] == "http"
+
+
+def test_tls_configuration_is_reflected_in_security_snapshots():
+    node = AkitaGenesisNode(
+        run_api_server=False,
+        api_tls_certfile="/tmp/server.crt",
+        api_tls_keyfile="/tmp/server.key",
+        api_tls_ca_file="/tmp/clients.pem",
+        api_tls_require_client_cert=True,
+    )
+
+    config_snapshot = node._build_config_snapshot()
+    dashboard_summary = asyncio.run(node._build_dashboard_summary())
+
+    assert node.api_scheme == "https"
+    assert config_snapshot["security"]["tls_enabled"] is True
+    assert config_snapshot["security"]["mutual_tls_required"] is True
+    assert dashboard_summary["security"]["tls_enabled"] is True
+    assert dashboard_summary["security"]["mutual_tls_required"] is True
+
+
+def test_tls_configuration_requires_cert_and_key_together():
+    try:
+        AkitaGenesisNode(run_api_server=False, api_tls_certfile="/tmp/server.crt")
+    except ValueError as exc:
+        assert "certificate file and a private key file" in str(exc)
+    else:
+        raise AssertionError("Expected TLS configuration validation to fail")

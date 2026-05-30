@@ -49,6 +49,10 @@ class AppSettings(BaseSettings):
     DEFAULT_API_HOST: str = Field(default="0.0.0.0", description="Default host for the node's control API.")
     DEFAULT_API_PORT: int = Field(default=8000, ge=1024, le=65535, description="Default port for the node's control API.")
     CONTROL_API_TIMEOUT_S: int = Field(default=10, description="Timeout for API requests from CLI to node.")
+    API_TLS_CERT_FILE: Optional[Path] = Field(default=None, description="PEM certificate file used to serve the control API over HTTPS.")
+    API_TLS_KEY_FILE: Optional[Path] = Field(default=None, description="PEM private key file used to serve the control API over HTTPS.")
+    API_TLS_CA_FILE: Optional[Path] = Field(default=None, description="CA bundle for validating client certificates when mutual TLS is enabled.")
+    API_TLS_REQUIRE_CLIENT_CERT: bool = Field(default=False, description="Require clients to present trusted TLS certificates when HTTPS is enabled.")
     # --- NEW: API Security ---
     # Use SecretStr to prevent accidental logging of keys.
     # Accept either a comma-separated string or a JSON array in the environment.

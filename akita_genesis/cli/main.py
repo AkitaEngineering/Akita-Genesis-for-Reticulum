@@ -1,13 +1,18 @@
 # akita_genesis/cli/main.py
 import asyncio
 import json
+import logging
+import textwrap
 import click
 import requests 
-import platform
 import os
+import shlex
+import subprocess
 import sys
 import time 
+import webbrowser
 import re # For log parsing
+from typing import Any, Dict, List, Optional, Tuple
 
 # Rich for pretty CLI output
 from rich.console import Console
@@ -15,7 +20,6 @@ from rich.table import Table
 from rich.text import Text
 from rich.panel import Panel
 from rich.syntax import Syntax
-from rich.live import Live # For potential live log tailing
 from rich.highlighter import RegexHighlighter
 from rich.theme import Theme
 
@@ -25,10 +29,218 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# Use absolute imports when running as a module/package
-from akita_genesis.config.settings import settings
-from akita_genesis.core.node import AkitaGenesisNode, run_node_async 
-from akita_genesis.utils.logger import setup_logger 
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+CLI_DEFAULT_API_HOST = os.environ.get("AKITA_DEFAULT_API_HOST", "0.0.0.0")
+CLI_DEFAULT_API_PORT = _env_int("AKITA_DEFAULT_API_PORT", 8000)
+CLI_DEFAULT_CLUSTER_NAME = os.environ.get("AKITA_DEFAULT_CLUSTER_NAME", "default_cluster")
+CLI_DEFAULT_LOG_LEVEL = os.environ.get("AKITA_LOG_LEVEL", "INFO").upper()
+CLI_DEFAULT_TASK_PRIORITY = _env_int("AKITA_DEFAULT_TASK_PRIORITY", 10)
+CLI_DEFAULT_CONTROL_API_TIMEOUT_S = _env_int("AKITA_CONTROL_API_TIMEOUT_S", 10)
+CLI_DEFAULT_API_KEY_HEADER_NAME = os.environ.get("AKITA_API_KEY_HEADER_NAME", "X-API-Key")
+CLI_DEFAULT_DDNS_EXEC = os.environ.get("AKITA_DDNS_EXEC", "python -m akita_ddns.main")
+CLI_DEFAULT_DDNS_CONFIG = os.environ.get("AKITA_DDNS_CONFIG", "akita_config.yaml")
+CLI_DEFAULT_DDNS_MODULE_PATH = os.environ.get("AKITA_DDNS_MODULE_PATH", "")
+CONFIG_SECTION_CHOICES = [
+    "application",
+    "node",
+    "network",
+    "cluster",
+    "task_engine",
+    "security",
+    "storage",
+]
+CLI_HELP_EPILOG = textwrap.dedent(
+    """
+    Examples:
+      akita-genesis start --node-name alpha --cluster-name prod --api-port 8001
+      akita-genesis --target-node-api http://127.0.0.1:8001 dashboard
+      akita-genesis --target-node-api http://127.0.0.1:8001 task submit '{"action":"train"}' --priority 5
+      akita-genesis --target-node-api https://node.example:8443 --ca-bundle ./ca.pem status
+            akita-genesis --target-node-api http://127.0.0.1:8001 ddns register-node
+      akita-genesis examples --topic security
+    """
+).strip()
+EXAMPLE_CATALOG: Dict[str, List[Tuple[str, str]]] = {
+    "bootstrap": [
+        (
+            "Start a node with explicit cluster membership and capabilities",
+            "akita-genesis start --node-name alpha --cluster-name prod --api-port 8001 --capabilities gpu --capabilities fast_io",
+        ),
+        (
+            "Start a node without the HTTP API for transport-only testing",
+            "akita-genesis start --node-name transport-only --no-api-server --cluster-name lab",
+        ),
+    ],
+    "operations": [
+        (
+            "Show the high-level dashboard summary for a node",
+            "akita-genesis --target-node-api http://127.0.0.1:8001 dashboard",
+        ),
+        (
+            "Inspect the cluster state with pretty tabular output",
+            "akita-genesis --target-node-api http://127.0.0.1:8001 cluster status",
+        ),
+        (
+            "Print the browser control room URL and open it",
+            "akita-genesis --target-node-api http://127.0.0.1:8001 ui url --open-browser",
+        ),
+    ],
+    "tasks": [
+        (
+            "Submit a capability-aware task",
+            "akita-genesis task submit '{\"action\":\"train\",\"required_capabilities\":[\"gpu\"]}' --priority 5",
+        ),
+        (
+            "List recent assigned tasks with pagination",
+            "akita-genesis task list --status assigned --limit 20 --offset 20",
+        ),
+        (
+            "Fetch a single task in machine-readable JSON",
+            "akita-genesis task status <task-id>",
+        ),
+    ],
+    "security": [
+        (
+            "Use a custom CA bundle for TLS verification",
+            "akita-genesis --target-node-api https://node.example:8443 --ca-bundle ./ca.pem status",
+        ),
+        (
+            "Temporarily bypass TLS certificate verification during bring-up",
+            "akita-genesis --target-node-api https://node.example:8443 --insecure logs --limit 20",
+        ),
+        (
+            "Authenticate to a secured node API",
+            "akita-genesis --target-node-api https://node.example:8443 --api-key <token> dashboard",
+        ),
+    ],
+    "ddns": [
+        (
+            "Auto-register the current Akita node identity in Akita DDNS",
+            "akita-genesis --target-node-api http://127.0.0.1:8001 ddns register-node",
+        ),
+        (
+            "Resolve a DDNS name via Akita DDNS CLI integration",
+            "akita-genesis ddns resolve --name alpha.prod --config ./akita_config.yaml",
+        ),
+        (
+            "Check whether Akita DDNS CLI is available in this environment",
+            "akita-genesis ddns doctor --config ./akita_config.yaml",
+        ),
+    ],
+}
+_cached_settings: Optional[Any] = None
+
+
+def setup_cli_logger(name: str = "akita_cli", level: str = "INFO") -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s - [%(levelname)s] - %(name)s (%(filename)s.%(funcName)s:%(lineno)d) - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+def get_settings() -> Any:
+    global _cached_settings
+    if _cached_settings is None:
+        from akita_genesis.config.settings import settings as app_settings
+
+        _cached_settings = app_settings
+    return _cached_settings
+
+
+def get_api_key_header_name() -> str:
+    try:
+        return str(get_settings().API_KEY_HEADER_NAME)
+    except Exception:
+        return CLI_DEFAULT_API_KEY_HEADER_NAME
+
+
+def get_control_api_timeout() -> int:
+    try:
+        return int(get_settings().CONTROL_API_TIMEOUT_S)
+    except Exception:
+        return CLI_DEFAULT_CONTROL_API_TIMEOUT_S
+
+
+def normalize_status(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    return str(value).lower()
+
+
+def status_style(status: str) -> str:
+    normalized = normalize_status(status)
+    if normalized == "online":
+        return "bold green"
+    if normalized == "degraded":
+        return "bold yellow"
+    if normalized in {"offline", "failed", "error"}:
+        return "bold red"
+    return "bold white"
+
+
+def build_ui_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/ui"
+
+
+def normalize_ddns_name(raw_name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9.-]+", "-", raw_name.strip().lower())
+    normalized = re.sub(r"-+", "-", normalized)
+    return normalized.strip(".-")
+
+
+def _run_ddns_subprocess(
+    ddns_exec: str,
+    ddns_config: str,
+    mode: str,
+    args: List[str],
+    module_path: str = "",
+    timeout_s: int = 15,
+) -> subprocess.CompletedProcess:
+    cmd = shlex.split(ddns_exec)
+    cmd.extend(["--config", ddns_config, mode])
+    cmd.extend(args)
+    cli_log.debug(f"Executing DDNS command: {' '.join(cmd)}")
+    environment = os.environ.copy()
+    if module_path:
+        existing_pythonpath = environment.get("PYTHONPATH", "")
+        environment["PYTHONPATH"] = f"{module_path}:{existing_pythonpath}" if existing_pythonpath else module_path
+    return subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout_s, env=environment)
+
+
+def _print_subprocess_result(result: subprocess.CompletedProcess) -> None:
+    if result.stdout:
+        click.echo(result.stdout.strip())
+    if result.stderr:
+        click.echo(result.stderr.strip(), err=True)
+
+
+def render_examples(topic: str) -> None:
+    console = Console(theme=log_theme)
+    topics = list(EXAMPLE_CATALOG.keys()) if topic == "all" else [topic]
+    for topic_name in topics:
+        table = Table(show_header=True, header_style="bold cyan", expand=True)
+        table.add_column("Use Case", ratio=1)
+        table.add_column("Command", ratio=2)
+        for description, command in EXAMPLE_CATALOG[topic_name]:
+            table.add_row(description, Syntax(command, "bash", theme="native", word_wrap=True))
+        console.print(Panel(table, title=f"{topic_name.title()} Examples", border_style="blue"))
 
 # --- Rich Highlighter for Logs ---
 class LogHighlighter(RegexHighlighter):
@@ -62,7 +274,7 @@ log_theme = Theme({
 })
 
 # --- CLI Logger ---
-cli_log = setup_logger("akita_cli", level="INFO")
+cli_log = setup_cli_logger("akita_cli", level="INFO")
 
 # --- API Request Helper (UPDATED for API Key) ---
 def make_api_request(ctx, method: str, endpoint: str, **kwargs) -> dict:
@@ -72,6 +284,15 @@ def make_api_request(ctx, method: str, endpoint: str, **kwargs) -> dict:
     """
     base_url = ctx.obj.get('TARGET_NODE_API')
     api_key = ctx.obj.get('API_KEY') # Get API key from context
+    ca_bundle = ctx.obj.get('CA_BUNDLE')
+    insecure = ctx.obj.get('INSECURE', False)
+    api_key_header_name = get_api_key_header_name()
+    api_timeout = get_control_api_timeout()
+    api_secured_locally = False
+    try:
+        api_secured_locally = bool(get_settings().VALID_API_KEYS)
+    except Exception:
+        api_secured_locally = False
     if not base_url:
         cli_log.error("Target node API URL is not set. Use --target-node-api <URL>.")
         raise click.Abort()
@@ -81,13 +302,17 @@ def make_api_request(ctx, method: str, endpoint: str, **kwargs) -> dict:
     
     headers = kwargs.pop('headers', {}) # Get existing headers or create new dict
     if api_key:
-        headers[settings.API_KEY_HEADER_NAME] = api_key
+        headers[api_key_header_name] = api_key
         cli_log.debug(f"Using API Key ending in '...{api_key[-4:] if len(api_key) >= 4 else api_key}'")
-    elif settings.VALID_API_KEYS: # Warn if keys are configured but none provided
+    elif api_secured_locally: # Warn if keys are configured but none provided
          cli_log.warning(f"No API key provided (--api-key or AKITA_API_KEY). Request to {url} might fail if API is secured.")
+
+    verify: Any = kwargs.pop('verify', None)
+    if verify is None:
+        verify = False if insecure else (ca_bundle if ca_bundle else True)
          
     try:
-        response = requests.request(method, url, headers=headers, timeout=settings.CONTROL_API_TIMEOUT_S, **kwargs)
+        response = requests.request(method, url, headers=headers, timeout=api_timeout, verify=verify, **kwargs)
         response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
         if response.content:
             # Try to parse JSON, but return raw text if it fails and status is OK
@@ -118,17 +343,21 @@ def make_api_request(ctx, method: str, endpoint: str, **kwargs) -> dict:
         cli_log.error(f"Details: {e}")
         raise click.Abort()
     except requests.exceptions.Timeout:
-        cli_log.error(f"Request Timeout: The request to {url} timed out after {settings.CONTROL_API_TIMEOUT_S}s.")
+        cli_log.error(f"Request Timeout: The request to {url} timed out after {api_timeout}s.")
         raise click.Abort()
     except requests.exceptions.RequestException as e:
         cli_log.error(f"Request Exception: {e} for URL: {url}")
         raise click.Abort()
 
 # --- CLI Group Definition (UPDATED for API Key) ---
-@click.group()
+@click.group(
+    context_settings={"help_option_names": ["-h", "--help"], "max_content_width": 100},
+    epilog=CLI_HELP_EPILOG,
+)
 @click.option(
     '--target-node-api',
-    default=f"http://{settings.DEFAULT_API_HOST}:{settings.DEFAULT_API_PORT}",
+    default=f"http://{CLI_DEFAULT_API_HOST}:{CLI_DEFAULT_API_PORT}",
+    show_default=True,
     help=f"Base URL of the Akita Genesis node API.",
     envvar="AKITA_TARGET_NODE_API"
 )
@@ -139,48 +368,84 @@ def make_api_request(ctx, method: str, endpoint: str, **kwargs) -> dict:
     envvar="AKITA_API_KEY" # Allow setting via environment variable
 )
 @click.option(
+    '--ca-bundle',
+    default=None,
+    type=click.Path(dir_okay=False, path_type=str),
+    help="Path to a CA bundle used to verify HTTPS certificates.",
+    envvar="AKITA_CA_BUNDLE",
+)
+@click.option(
+    '--insecure',
+    is_flag=True,
+    help="Disable TLS certificate verification for HTTPS API requests.",
+)
+@click.option(
     '--debug', is_flag=True, help="Enable debug logging for the CLI."
 )
 @click.pass_context
-def cli_app(ctx, target_node_api, api_key, debug):
+def cli_app(ctx, target_node_api, api_key, ca_bundle, insecure, debug):
     """
     Akita Genesis Command Line Interface.
-    Use this CLI to start nodes and interact with their APIs.
+    Use this CLI to start nodes, inspect runtime state, and operate the node API.
     """
     ctx.ensure_object(dict)
     ctx.obj['TARGET_NODE_API'] = target_node_api
     ctx.obj['API_KEY'] = api_key # Store API key in context
+    ctx.obj['CA_BUNDLE'] = ca_bundle
+    ctx.obj['INSECURE'] = insecure
     if debug:
         global cli_log # Modify the global CLI logger instance
-        cli_log = setup_logger("akita_cli", level="DEBUG")
+        cli_log = setup_cli_logger("akita_cli", level="DEBUG")
         cli_log.debug("CLI debug logging enabled.")
     cli_log.debug(f"Target Node API: {target_node_api}")
+    if insecure:
+        cli_log.warning("TLS certificate verification is disabled for API requests.")
     if api_key:
         # Mask the key in debug logs for security
         masked_key = f"{'*' * (len(api_key) - 4)}{api_key[-4:]}" if len(api_key) >= 4 else api_key
         cli_log.debug(f"Using API Key: {masked_key}")
+
+
+@cli_app.command("examples")
+@click.option(
+    '--topic',
+    type=click.Choice(["all"] + list(EXAMPLE_CATALOG.keys()), case_sensitive=False),
+    default="all",
+    show_default=True,
+    help="Show curated examples for one area of the CLI.",
+)
+def examples_cmd(topic):
+    """Print curated examples for common operational workflows."""
+    render_examples(topic.lower())
 
 # --- Commands ---
 
 # start command (no API key needed for start itself)
 @cli_app.command()
 @click.option('--node-name', default=None, help=f"Name for this node.")
-@click.option('--cluster-name', default=settings.DEFAULT_CLUSTER_NAME, help=f"Name of the cluster to join.")
+@click.option('--cluster-name', default=CLI_DEFAULT_CLUSTER_NAME, show_default=True, help=f"Name of the cluster to join.")
 @click.option('--identity-path', default=None, help="Path to the Reticulum identity file.")
-@click.option('--api-host', default=settings.DEFAULT_API_HOST, help=f"Host for the node's API server.")
-@click.option('--api-port', default=settings.DEFAULT_API_PORT, type=int, help=f"Port for the node's API server.")
+@click.option('--api-host', default=CLI_DEFAULT_API_HOST, show_default=True, help=f"Host for the node's API server.")
+@click.option('--api-port', default=CLI_DEFAULT_API_PORT, show_default=True, type=int, help=f"Port for the node's API server.")
+@click.option('--tls-certfile', default=None, type=click.Path(dir_okay=False, path_type=str), help="PEM certificate file used to serve the control API over HTTPS.")
+@click.option('--tls-keyfile', default=None, type=click.Path(dir_okay=False, path_type=str), help="PEM private key file used to serve the control API over HTTPS.")
+@click.option('--tls-ca-file', default=None, type=click.Path(dir_okay=False, path_type=str), help="CA bundle used to validate client certificates for mutual TLS.")
+@click.option('--tls-require-client-cert', is_flag=True, help="Require trusted client certificates when HTTPS is enabled.")
 @click.option('--rns-port', default=None, type=int, help="Specific port for Reticulum Transport.")
 @click.option('--capabilities', default=None, multiple=True, help="Node capabilities (repeatable).")
 @click.option('--no-api-server', is_flag=True, help="Do not start the HTTP API server.")
-@click.option('--log-level', default=settings.LOG_LEVEL, type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False), help="Node logging level.")
-def start(node_name, cluster_name, identity_path, api_host, api_port, rns_port, capabilities, no_api_server, log_level):
+@click.option('--log-level', default=CLI_DEFAULT_LOG_LEVEL, show_default=True, type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False), help="Node logging level.")
+def start(node_name, cluster_name, identity_path, api_host, api_port, tls_certfile, tls_keyfile, tls_ca_file, tls_require_client_cert, rns_port, capabilities, no_api_server, log_level):
     """
     Starts a new Akita Genesis node process in the foreground.
     """
+    from akita_genesis.config.settings import settings as app_settings
+    from akita_genesis.core.node import AkitaGenesisNode, run_node_async
+
     cli_log.info("Preparing to start Akita Genesis node...")
     # Temporarily override log level setting for the node instance being started
-    original_settings_log_level = settings.LOG_LEVEL
-    settings.LOG_LEVEL = log_level.upper()
+    original_settings_log_level = app_settings.LOG_LEVEL
+    app_settings.LOG_LEVEL = log_level.upper()
     
     # Create the node instance
     node_instance = AkitaGenesisNode(
@@ -189,12 +454,16 @@ def start(node_name, cluster_name, identity_path, api_host, api_port, rns_port, 
         identity_path=identity_path,
         api_host=api_host,
         api_port=api_port,
+        api_tls_certfile=tls_certfile,
+        api_tls_keyfile=tls_keyfile,
+        api_tls_ca_file=tls_ca_file,
+        api_tls_require_client_cert=tls_require_client_cert,
         rns_port=rns_port,
         run_api_server=not no_api_server,
         capabilities=list(capabilities) if capabilities else []
     )
     
-    cli_log.info(f"Node Name: {node_instance.node_name}, Cluster: {node_instance.cluster_name}, API: http://{node_instance.api_host}:{node_instance.api_port}, Caps: {node_instance.capabilities}")
+    cli_log.info(f"Node Name: {node_instance.node_name}, Cluster: {node_instance.cluster_name}, API: {node_instance.api_scheme}://{node_instance.api_host}:{node_instance.api_port}, Caps: {node_instance.capabilities}")
     if no_api_server:
         cli_log.info("API server will NOT be started for this node.")
 
@@ -208,16 +477,20 @@ def start(node_name, cluster_name, identity_path, api_host, api_port, rns_port, 
         cli_log.error("Node startup failed.")
     finally:
         # Restore original log level in case CLI is used further in the same process (unlikely but good practice)
-        settings.LOG_LEVEL = original_settings_log_level 
+        app_settings.LOG_LEVEL = original_settings_log_level 
         cli_log.info("Node process has exited.")
 
 # status command (API call uses key from context)
 @cli_app.command()
+@click.option('--json-output', is_flag=True, help="Print the raw JSON response instead of rich panels.")
 @click.pass_context
-def status(ctx):
+def status(ctx, json_output):
     """Gets the status of the target Akita Genesis node."""
     cli_log.debug(f"Requesting node status from {ctx.obj['TARGET_NODE_API']}")
     result = make_api_request(ctx, "GET", "/status") # make_api_request now handles key
+    if json_output:
+        Console().print_json(data=result)
+        return
     console = Console(theme=log_theme) # Use theme for potential log level colors
     if not result:
         console.print(Panel("[bold red]Failed to retrieve node status or empty response.[/bold red]", title="Error", border_style="red"))
@@ -230,7 +503,10 @@ def status(ctx):
     panel_content.append(f"Capabilities: {', '.join(result.get('capabilities', [])) or 'N/A'}\n")
     panel_content.append(f"Cluster Name: {result.get('cluster_name', 'N/A')}\n")
     panel_content.append(f"RNS Identity: {result.get('rns_identity_hex', 'N/A')}\n")
-    panel_content.append(f"Status: {result.get('status', 'N/A')}\n", style="bold green" if result.get('status') == "ONLINE" else "bold yellow")
+    panel_content.append(
+        f"Status: {result.get('status', 'N/A')}\n",
+        style=status_style(result.get('status')),
+    )
     panel_content.append(f"Is Leader: {result.get('is_leader', False)}\n", style="bold magenta" if result.get('is_leader') else "")
     panel_content.append(f"Current Leader ID: {result.get('current_leader_id', 'None')}\n")
     panel_content.append(f"Assigned Tasks: {result.get('current_task_count', 0)}\n")
@@ -258,11 +534,15 @@ def cluster():
     """Commands related to cluster status and management."""
     pass
 @cluster.command("status")
+@click.option('--json-output', is_flag=True, help="Print the raw JSON response instead of the formatted table.")
 @click.pass_context
-def cluster_status(ctx):
+def cluster_status(ctx, json_output):
     """Gets the status of the cluster as seen by the target node."""
     cli_log.debug(f"Requesting cluster status from {ctx.obj['TARGET_NODE_API']}")
     result = make_api_request(ctx, "GET", "/cluster/status") # make_api_request handles key
+    if json_output:
+        Console().print_json(data=result)
+        return
     console = Console(theme=log_theme)
     if not result or "nodes" not in result:
         console.print(Panel("[bold red]Failed to retrieve cluster status or malformed response.[/bold red]", title="Error", border_style="red"))
@@ -292,9 +572,8 @@ def cluster_status(ctx):
     nodes_data = result.get("nodes", [])
     for node_data in sorted(nodes_data, key=lambda x: x.get("node_name", "")): # Sort by name
         # Determine style based on status
-        status_style = "green"
-        if node_data.get("status") == "OFFLINE": status_style = "red"
-        elif node_data.get("status") == "DEGRADED": status_style = "yellow"
+        node_status = normalize_status(node_data.get("status"))
+        rendered_status_style = status_style(node_status)
         # Format last seen timestamp
         last_seen_str = "N/A"
         if node_data.get("last_seen"):
@@ -314,7 +593,7 @@ def cluster_status(ctx):
         # Add row to table
         table.add_row(
             node_data.get("node_id", "N/A"), node_data.get("node_name", "N/A"),
-            Text(node_data.get("status", "N/A"), style=status_style),
+            Text(node_data.get("status", "N/A"), style=rendered_status_style),
             is_leader_text, str(node_data.get("current_task_count", 0)), caps_str,
             node_data.get("address_hex", "N/A"), last_seen_str, resources_str
         )
@@ -328,9 +607,76 @@ def cluster_status(ctx):
     # Print summary counts
     summary_text = Text.assemble(
         ("Total Nodes Known: ", "dim"), (str(result.get("total_nodes_known", 0)), "bold"),
-        (" | Online: ", "dim"), (str(result.get("online_nodes_count", 0)), "bold green")
+        (" | Online: ", "dim"), (str(result.get("online_nodes_count", 0)), "bold green"),
+        (" | Degraded: ", "dim"), (str(result.get("degraded_nodes_count", 0)), "bold yellow"),
+        (" | Offline: ", "dim"), (str(result.get("offline_nodes_count", 0)), "bold red")
     )
     console.print(summary_text, justify="center")
+
+
+@cli_app.command("dashboard")
+@click.option('--json-output', is_flag=True, help="Print the raw JSON response instead of a rich summary.")
+@click.option('--show-events/--hide-events', default=True, show_default=True, help="Show recent ledger events in the dashboard view.")
+@click.option('--show-workers/--hide-workers', default=True, show_default=True, help="Show available/busy workers in the dashboard view.")
+@click.pass_context
+def dashboard_cmd(ctx, json_output, show_events, show_workers):
+    """Fetches the high-level control room summary from the target node."""
+    result = make_api_request(ctx, "GET", "/dashboard/summary")
+    if json_output:
+        Console().print_json(data=result)
+        return
+
+    console = Console(theme=log_theme)
+    node = result.get("node", {})
+    cluster_data = result.get("cluster", {})
+    tasks_data = result.get("tasks", {})
+    security = result.get("security", {})
+    panel = Text()
+    panel.append(f"Node: {node.get('node_name', 'N/A')} ({node.get('node_id', 'N/A')})\n", style="bold cyan")
+    panel.append(f"Cluster: {cluster_data.get('cluster_name', 'N/A')}\n")
+    panel.append(f"Status: {node.get('status', 'unknown')}\n", style=status_style(node.get('status')))
+    panel.append(f"Leader: {node.get('current_leader_id', 'None')}\n")
+    panel.append(f"Uptime: {time.strftime('%H:%M:%S', time.gmtime(node.get('uptime_seconds', 0)))}\n")
+    panel.append(f"API Security: {'secured' if security.get('api_secured') else 'open'}\n")
+    panel.append(f"UI: {build_ui_url(ctx.obj['TARGET_NODE_API'])}\n", style="bold magenta")
+    console.print(Panel(panel, title="Dashboard Summary", border_style="blue", expand=False))
+
+    task_counts = tasks_data.get("counts", {})
+    task_table = Table(title="Task Queue Snapshot", expand=True)
+    task_table.add_column("Status", style="dim")
+    task_table.add_column("Count", style="bold")
+    for status_name, count in sorted(task_counts.items()):
+        task_table.add_row(status_name, str(count))
+    console.print(task_table)
+
+    if show_workers:
+        busiest_nodes = cluster_data.get("busiest_nodes", [])
+        worker_table = Table(title="Busiest Nodes", expand=True)
+        worker_table.add_column("Node")
+        worker_table.add_column("Status")
+        worker_table.add_column("Tasks")
+        worker_table.add_column("Capabilities")
+        for worker in busiest_nodes:
+            worker_table.add_row(
+                worker.get("node_name", worker.get("node_id", "N/A")),
+                Text(worker.get("status", "unknown"), style=status_style(worker.get("status"))),
+                str(worker.get("current_task_count", 0)),
+                ", ".join(worker.get("capabilities", [])) or "-",
+            )
+        console.print(worker_table)
+
+    if show_events:
+        event_table = Table(title="Recent Events", expand=True)
+        event_table.add_column("Timestamp", style="green")
+        event_table.add_column("Event", style="cyan")
+        event_table.add_column("Source")
+        for event in result.get("events", []):
+            event_table.add_row(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(float(event.get('timestamp', 0)))) if event.get('timestamp') else 'N/A',
+                event.get("event_type", "N/A"),
+                event.get("source_node_name", event.get("source_node_id", "N/A")),
+            )
+        console.print(event_table)
 
 # task commands (API calls use key from context)
 @cli_app.group("task")
@@ -339,7 +685,7 @@ def task():
     pass
 @task.command("submit")
 @click.argument('task_data_json', type=str)
-@click.option('--priority', default=settings.DEFAULT_TASK_PRIORITY, type=int, help="Task priority.")
+@click.option('--priority', default=CLI_DEFAULT_TASK_PRIORITY, show_default=True, type=int, help="Task priority.")
 @click.pass_context
 def task_submit(ctx, task_data_json, priority):
     """
@@ -368,16 +714,223 @@ def task_status_cmd(ctx, task_id):
 
 @task.command("list")
 @click.option('--status', default=None, help="Filter tasks by status (e.g., pending, completed).")
-@click.option('--limit', default=10, type=int, help="Number of tasks to list.")
+@click.option('--limit', default=10, show_default=True, type=int, help="Number of tasks to list.")
+@click.option('--offset', default=0, show_default=True, type=int, help="Offset into the task list for pagination.")
 @click.pass_context
-def task_list(ctx, status, limit):
+def task_list(ctx, status, limit, offset):
     """Lists tasks known to the target node."""
-    endpoint = f"/tasks?limit={limit}"
+    endpoint = f"/tasks?limit={limit}&offset={offset}"
     if status:
         endpoint += f"&status={status}"
     cli_log.debug(f"Listing tasks from {ctx.obj['TARGET_NODE_API']} with endpoint {endpoint}")
     result = make_api_request(ctx, "GET", endpoint) # make_api_request handles key
     Console().print_json(data=result)
+
+
+@cli_app.group("config")
+def config_group():
+    """Commands for inspecting runtime configuration exposed by the node API."""
+    pass
+
+
+@config_group.command("show")
+@click.option(
+    '--section',
+    type=click.Choice(CONFIG_SECTION_CHOICES, case_sensitive=False),
+    default=None,
+    help="Show only one configuration section.",
+)
+@click.option('--json-output', is_flag=True, help="Print raw JSON instead of a grouped table.")
+@click.pass_context
+def config_show(ctx, section, json_output):
+    """Fetches the sanitized runtime configuration snapshot from the target node."""
+    result = make_api_request(ctx, "GET", "/config")
+    if section:
+        result = {section: result.get(section, {})}
+    if json_output:
+        Console().print_json(data=result)
+        return
+
+    console = Console(theme=log_theme)
+    for section_name, section_values in result.items():
+        table = Table(title=f"Config: {section_name}", expand=True)
+        table.add_column("Key", style="cyan")
+        table.add_column("Value", overflow="fold")
+        for key, value in section_values.items():
+            if isinstance(value, (dict, list)):
+                rendered_value = json.dumps(value)
+            else:
+                rendered_value = str(value)
+            table.add_row(key, rendered_value)
+        console.print(table)
+
+
+@cli_app.group("ui")
+def ui_group():
+    """Commands related to the browser-based control room."""
+    pass
+
+
+@ui_group.command("url")
+@click.option('--open-browser', is_flag=True, help="Open the control room URL in the default browser.")
+@click.pass_context
+def ui_url(ctx, open_browser):
+    """Prints the browser control room URL for the target node."""
+    target_url = build_ui_url(ctx.obj['TARGET_NODE_API'])
+    click.echo(target_url)
+    if open_browser:
+        opened = webbrowser.open(target_url)
+        if not opened:
+            cli_log.warning("The default browser could not be opened automatically.")
+
+
+@cli_app.group("ddns")
+def ddns_group():
+    """Optional Akita DDNS integration commands via the external akita_ddns module."""
+    pass
+
+
+@ddns_group.command("doctor")
+@click.option('--exec-cmd', default=CLI_DEFAULT_DDNS_EXEC, show_default=True, help="Command used to invoke Akita DDNS.")
+@click.option('--config', 'ddns_config', default=CLI_DEFAULT_DDNS_CONFIG, show_default=True, help="Path to akita_config.yaml used by Akita DDNS.")
+@click.option('--module-path', default=CLI_DEFAULT_DDNS_MODULE_PATH, show_default=False, help="Path containing the akita_ddns package (prepended to PYTHONPATH).")
+@click.option('--timeout', 'timeout_s', default=10, show_default=True, type=int, help="Timeout in seconds for the DDNS diagnostic command.")
+def ddns_doctor(exec_cmd, ddns_config, module_path, timeout_s):
+    """Checks whether Akita DDNS is installed and callable."""
+    try:
+        result = _run_ddns_subprocess(exec_cmd, ddns_config, "cli", ["--help"], module_path=module_path, timeout_s=timeout_s)
+    except FileNotFoundError:
+        raise click.ClickException(
+            "Akita DDNS executable was not found. Install Akita DDNS and/or set AKITA_DDNS_EXEC."
+        )
+    except subprocess.TimeoutExpired:
+        raise click.ClickException("Akita DDNS command timed out during diagnostics.")
+
+    _print_subprocess_result(result)
+    if result.returncode != 0:
+        raise click.ClickException("Akita DDNS CLI check failed.")
+    click.echo("Akita DDNS integration is available.")
+
+
+@ddns_group.command("resolve")
+@click.option('--name', required=True, help="DDNS name to resolve, e.g. alpha.prod.")
+@click.option('--identity', default=None, help="Optional identity file for the DDNS CLI resolve call.")
+@click.option('--timeout', 'resolve_timeout', default=5.0, show_default=True, type=float, help="Resolve timeout passed to Akita DDNS.")
+@click.option('--exec-cmd', default=CLI_DEFAULT_DDNS_EXEC, show_default=True, help="Command used to invoke Akita DDNS.")
+@click.option('--config', 'ddns_config', default=CLI_DEFAULT_DDNS_CONFIG, show_default=True, help="Path to akita_config.yaml used by Akita DDNS.")
+@click.option('--module-path', default=CLI_DEFAULT_DDNS_MODULE_PATH, show_default=False, help="Path containing the akita_ddns package (prepended to PYTHONPATH).")
+@click.option('--process-timeout', 'process_timeout_s', default=15, show_default=True, type=int, help="Max seconds to wait for the DDNS subprocess.")
+def ddns_resolve(name, identity, resolve_timeout, exec_cmd, ddns_config, module_path, process_timeout_s):
+    """Resolves a name through Akita DDNS."""
+    args = ["resolve", "--name", name, "--timeout", str(resolve_timeout)]
+    if identity:
+        args.extend(["--identity", identity])
+    try:
+        result = _run_ddns_subprocess(exec_cmd, ddns_config, "cli", args, module_path=module_path, timeout_s=process_timeout_s)
+    except FileNotFoundError:
+        raise click.ClickException("Akita DDNS executable was not found.")
+    except subprocess.TimeoutExpired:
+        raise click.ClickException("Akita DDNS resolve timed out.")
+
+    _print_subprocess_result(result)
+    if result.returncode != 0:
+        raise click.ClickException("Akita DDNS resolve failed.")
+
+
+@ddns_group.command("register")
+@click.option('--name', required=True, help="DDNS name to register, e.g. alpha.prod.")
+@click.option('--rid', default=None, help="RID to register. If omitted, Akita DDNS uses its local default identity RID.")
+@click.option('--ttl', default=3600, show_default=True, type=int, help="Registration TTL in seconds.")
+@click.option('--identity', default=None, help="Optional identity file for signing the registration.")
+@click.option('--exec-cmd', default=CLI_DEFAULT_DDNS_EXEC, show_default=True, help="Command used to invoke Akita DDNS.")
+@click.option('--config', 'ddns_config', default=CLI_DEFAULT_DDNS_CONFIG, show_default=True, help="Path to akita_config.yaml used by Akita DDNS.")
+@click.option('--module-path', default=CLI_DEFAULT_DDNS_MODULE_PATH, show_default=False, help="Path containing the akita_ddns package (prepended to PYTHONPATH).")
+@click.option('--process-timeout', 'process_timeout_s', default=15, show_default=True, type=int, help="Max seconds to wait for the DDNS subprocess.")
+def ddns_register(name, rid, ttl, identity, exec_cmd, ddns_config, module_path, process_timeout_s):
+    """Registers a name through Akita DDNS."""
+    args = ["register", "--name", name, "--ttl", str(ttl)]
+    if rid:
+        args.extend(["--rid", rid])
+    if identity:
+        args.extend(["--identity", identity])
+    try:
+        result = _run_ddns_subprocess(exec_cmd, ddns_config, "cli", args, module_path=module_path, timeout_s=process_timeout_s)
+    except FileNotFoundError:
+        raise click.ClickException("Akita DDNS executable was not found.")
+    except subprocess.TimeoutExpired:
+        raise click.ClickException("Akita DDNS register command timed out.")
+
+    _print_subprocess_result(result)
+    if result.returncode != 0:
+        raise click.ClickException("Akita DDNS register failed.")
+
+
+@ddns_group.command("register-node")
+@click.option('--name', default=None, help="DDNS name override. Defaults to normalized node_name.cluster_name.")
+@click.option('--ttl', default=3600, show_default=True, type=int, help="Registration TTL in seconds.")
+@click.option('--identity', default=None, help="Optional DDNS signer identity path.")
+@click.option('--exec-cmd', default=CLI_DEFAULT_DDNS_EXEC, show_default=True, help="Command used to invoke Akita DDNS.")
+@click.option('--config', 'ddns_config', default=CLI_DEFAULT_DDNS_CONFIG, show_default=True, help="Path to akita_config.yaml used by Akita DDNS.")
+@click.option('--module-path', default=CLI_DEFAULT_DDNS_MODULE_PATH, show_default=False, help="Path containing the akita_ddns package (prepended to PYTHONPATH).")
+@click.option('--process-timeout', 'process_timeout_s', default=15, show_default=True, type=int, help="Max seconds to wait for the DDNS subprocess.")
+@click.pass_context
+def ddns_register_node(ctx, name, ttl, identity, exec_cmd, ddns_config, module_path, process_timeout_s):
+    """Registers the current Akita node RID (from /status) into Akita DDNS."""
+    status = make_api_request(ctx, "GET", "/status")
+    rid = status.get("rns_identity_hex")
+    if not rid:
+        raise click.ClickException("Node status did not include rns_identity_hex; cannot register with DDNS.")
+
+    derived_name = name
+    if not derived_name:
+        node_name = normalize_ddns_name(str(status.get("node_name", "akita-node")))
+        cluster_name = normalize_ddns_name(str(status.get("cluster_name", "default")))
+        derived_name = f"{node_name}.{cluster_name}" if cluster_name else node_name
+
+    args = ["register", "--name", derived_name, "--rid", rid, "--ttl", str(ttl)]
+    if identity:
+        args.extend(["--identity", identity])
+
+    try:
+        result = _run_ddns_subprocess(exec_cmd, ddns_config, "cli", args, module_path=module_path, timeout_s=process_timeout_s)
+    except FileNotFoundError:
+        raise click.ClickException("Akita DDNS executable was not found.")
+    except subprocess.TimeoutExpired:
+        raise click.ClickException("Akita DDNS register-node command timed out.")
+
+    _print_subprocess_result(result)
+    if result.returncode != 0:
+        raise click.ClickException("Akita DDNS register-node failed.")
+
+
+@ddns_group.command("list")
+@click.option('--registry/--no-registry', default=True, show_default=True, help="Include DDNS registry data.")
+@click.option('--namespaces/--no-namespaces', default=True, show_default=True, help="Include DDNS namespaces data.")
+@click.option('--reputation/--no-reputation', default=False, show_default=True, help="Include DDNS reputation data.")
+@click.option('--exec-cmd', default=CLI_DEFAULT_DDNS_EXEC, show_default=True, help="Command used to invoke Akita DDNS.")
+@click.option('--config', 'ddns_config', default=CLI_DEFAULT_DDNS_CONFIG, show_default=True, help="Path to akita_config.yaml used by Akita DDNS.")
+@click.option('--module-path', default=CLI_DEFAULT_DDNS_MODULE_PATH, show_default=False, help="Path containing the akita_ddns package (prepended to PYTHONPATH).")
+@click.option('--process-timeout', 'process_timeout_s', default=15, show_default=True, type=int, help="Max seconds to wait for the DDNS subprocess.")
+def ddns_list(registry, namespaces, reputation, exec_cmd, ddns_config, module_path, process_timeout_s):
+    """Displays local persisted DDNS state via Akita DDNS CLI."""
+    args = ["list"]
+    if registry:
+        args.append("--registry")
+    if namespaces:
+        args.append("--namespaces")
+    if reputation:
+        args.append("--reputation")
+
+    try:
+        result = _run_ddns_subprocess(exec_cmd, ddns_config, "cli", args, module_path=module_path, timeout_s=process_timeout_s)
+    except FileNotFoundError:
+        raise click.ClickException("Akita DDNS executable was not found.")
+    except subprocess.TimeoutExpired:
+        raise click.ClickException("Akita DDNS list command timed out.")
+
+    _print_subprocess_result(result)
+    if result.returncode != 0:
+        raise click.ClickException("Akita DDNS list failed.")
 
 # ledger_group commands (API call uses key from context)
 @cli_app.group("ledger")
@@ -511,6 +1064,25 @@ def logs_cmd(ctx, limit, level, follow):
                 level_name = level_match.group(1)
                 style = f"log.level.{level_name}"
             console.print(log_highlighter(entry), style=style)
+
+
+@cli_app.command("health")
+@click.option('--json-output', is_flag=True, help="Print the raw dashboard JSON used for the health snapshot.")
+@click.pass_context
+def health_cmd(ctx, json_output):
+    """Prints a concise health summary for scripting and operator spot checks."""
+    result = make_api_request(ctx, "GET", "/readyz")
+    if json_output:
+        Console().print_json(data=result)
+        return
+
+    checks = result.get("checks", {})
+    click.echo(
+        f"node={result.get('node_name','unknown')} ready={result.get('ready', False)} "
+        f"status={result.get('status','unknown')} leader={result.get('current_leader_id','none')} "
+        f"scheme={result.get('api_scheme','http')} storage={checks.get('storage_initialized', False)} "
+        f"transport={checks.get('communication_ready', False)}"
+    )
 
 
 # shutdown command (API call uses key from context)

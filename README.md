@@ -13,6 +13,9 @@ License: GPLv3
 * Exposes node status, cluster status, task state, logs, and ledger events through a CLI-friendly HTTP API.
 * Serves a browser-based control room with dashboards, cluster views, task browsing/submission, logs, ledger history, and grouped configuration panes.
 * Supports optional API key protection for the control API.
+* Supports HTTPS for the control API, with optional mutual TLS for operator-grade deployments.
+* Exposes Linux-friendly liveness/readiness probes at `/healthz` and `/readyz`.
+* Optionally integrates with Akita Dynamic DDNS for human-readable Reticulum naming.
 
 ## Requirements
 
@@ -67,6 +70,10 @@ Common settings:
 * `AKITA_DEFAULT_CLUSTER_NAME`
 * `AKITA_DEFAULT_API_HOST`
 * `AKITA_DEFAULT_API_PORT`
+* `AKITA_API_TLS_CERT_FILE`
+* `AKITA_API_TLS_KEY_FILE`
+* `AKITA_API_TLS_CA_FILE`
+* `AKITA_API_TLS_REQUIRE_CLIENT_CERT`
 * `AKITA_MAX_TASK_EXECUTION_ATTEMPTS`
 * `AKITA_WORKER_ACK_TIMEOUT_S`
 * `AKITA_WORKER_PROCESSING_TIMEOUT_S`
@@ -86,6 +93,8 @@ Global options:
 
 * `--target-node-api`: Base URL for the node HTTP API.
 * `--api-key`: API key sent in the configured header.
+* `--ca-bundle`: CA bundle path for verifying HTTPS node certificates.
+* `--insecure`: Disable HTTPS certificate verification for temporary bring-up.
 * `--debug`: Enables debug logging for the CLI.
 
 Common commands:
@@ -94,9 +103,14 @@ Common commands:
 # Start a node
 akita-genesis start --node-name WorkerGPU --cluster-name MyCluster --capabilities gpu --api-port 8001
 
+# Start HTTPS with optional mutual TLS
+akita-genesis start --api-port 8443 --tls-certfile ./server.crt --tls-keyfile ./server.key
+akita-genesis start --api-port 8443 --tls-certfile ./server.crt --tls-keyfile ./server.key --tls-ca-file ./clients-ca.pem --tls-require-client-cert
+
 # Check node and cluster status
 akita-genesis --target-node-api http://127.0.0.1:8001 status
 akita-genesis --target-node-api http://127.0.0.1:8001 cluster status
+akita-genesis --target-node-api https://127.0.0.1:8443 --ca-bundle ./ca.pem status
 
 # Submit and inspect tasks
 akita-genesis task submit '{"action":"train","required_capabilities":["gpu"]}' --priority 5
@@ -109,6 +123,41 @@ akita-genesis logs --follow --level error
 
 # Inspect the ledger
 akita-genesis ledger view --limit 20 --event-type TASK_COMPLETED
+
+# Runtime probes and high-level control room links
+akita-genesis --target-node-api http://127.0.0.1:8001 health
+akita-genesis --target-node-api http://127.0.0.1:8001 ui url --open-browser
+
+# Curated operator examples
+akita-genesis examples --topic operations
+
+# Optional Akita DDNS integration
+akita-genesis ddns doctor
+akita-genesis --target-node-api http://127.0.0.1:8001 ddns register-node
+akita-genesis ddns resolve --name workergpu.mycluster
+```
+
+## Akita DDNS Integration (Optional)
+
+The Akita DDNS project is valuable for Reticulum-native service discovery because it maps human-readable names to dynamic RIDs.
+
+This repository now includes optional CLI integration through the `ddns` command group, including:
+
+* `ddns doctor` to verify DDNS availability
+* `ddns register` and `ddns resolve`
+* `ddns register-node` to publish the current Akita node RID from `/status`
+* `ddns list` to inspect persisted DDNS state
+
+Important:
+
+* Akita DDNS is not added as a hard runtime dependency because the external repository currently does not publish package metadata (`setup.py` or `pyproject.toml`).
+* Integration is process-based (`python -m akita_ddns.main ...`) and remains optional.
+
+To use it reliably from this project, point the CLI to the DDNS module path:
+
+```bash
+export AKITA_DDNS_MODULE_PATH=/path/to/Akita-Dynamic-DDNS-for-Reticulum
+akita-genesis ddns doctor --config /path/to/akita_config.yaml
 ```
 
 For a fuller command reference, see `docs/cli_usage.md`.
@@ -136,6 +185,19 @@ Security model:
 * The UI shell itself is public so a browser can load it normally.
 * Data endpoints and control actions still require the API key when the node is secured.
 * The browser stores the provided key in session storage for the current tab/session.
+* The UI now defaults to a black/silver/titanium/deep-purple control-room palette for high-contrast operations.
+
+## Linux Operations Notes
+
+For service-managed Linux environments (systemd, containers, orchestrators), use:
+
+* `/healthz` for liveness checks.
+* `/readyz` for readiness checks and startup gates.
+
+When TLS is enabled on the node API:
+
+* Prefer `--ca-bundle` on the CLI.
+* Keep `--insecure` only for temporary debugging.
 
 ## Development
 

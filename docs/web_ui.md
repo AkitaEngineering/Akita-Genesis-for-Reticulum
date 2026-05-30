@@ -25,6 +25,15 @@ http://127.0.0.1:8001/ui
 * **Ledger**: Scrollable audit trail with event-type filtering.
 * **Configuration**: Sanitized runtime configuration grouped by application, node, network, cluster, task engine, security, and storage.
 
+## Visual System
+
+The control room UI uses a high-contrast operational palette:
+
+* Black and deep charcoal for base surfaces.
+* Titanium and silver neutrals for structure and readability.
+* Deep purple as the primary action/status accent.
+* White/near-white foreground text for critical metrics and controls.
+
 ## Security Model
 
 The web UI shell is intentionally public so a browser can load it without custom headers.
@@ -41,6 +50,8 @@ Protected behavior:
 When the node is secured with `AKITA_VALID_API_KEYS`, the UI prompts for an API key and sends it in the configured header for data fetches and control actions.
 
 The key is stored in browser session storage, not persisted indefinitely.
+
+Transport security state (TLS and optional mutual TLS requirements) is exposed in dashboard/config payloads and reflected in UI security context.
 
 ## Operational Features
 
@@ -61,3 +72,5 @@ The UI primarily consumes these endpoints:
 * `/ledger`
 * `/config`
 * `/shutdown`
+* `/healthz`
+* `/readyz`

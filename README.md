@@ -11,6 +11,7 @@ License: GPLv3
 * Accepts tasks through the HTTP API or CLI and schedules them by priority, capability, and worker load.
 * Tracks task retries, worker acknowledgement timeouts, and processing timeouts.
 * Exposes node status, cluster status, task state, logs, and ledger events through a CLI-friendly HTTP API.
+* Serves a browser-based control room with dashboards, cluster views, task browsing/submission, logs, ledger history, and grouped configuration panes.
 * Supports optional API key protection for the control API.
 
 ## Requirements
@@ -112,6 +113,30 @@ akita-genesis ledger view --limit 20 --event-type TASK_COMPLETED
 
 For a fuller command reference, see `docs/cli_usage.md`.
 
+## Browser UI
+
+Each node now serves a browser control room at `/ui`.
+
+Example:
+
+```bash
+akita-genesis start --node-name WorkerGPU --cluster-name MyCluster --api-port 8001
+# then open http://127.0.0.1:8001/ui
+```
+
+The UI includes:
+
+* A live dashboard with node health, cluster posture, task distribution, and recent events.
+* Dedicated sections for cluster members, tasks, logs, ledger history, and runtime configuration.
+* Browser-side task submission and a graceful shutdown action.
+* Auto-refresh controls and an API key dialog for secured nodes.
+
+Security model:
+
+* The UI shell itself is public so a browser can load it normally.
+* Data endpoints and control actions still require the API key when the node is secured.
+* The browser stores the provided key in session storage for the current tab/session.
+
 ## Development
 
 Run tests:
@@ -138,6 +163,7 @@ python -m isort --check-only .
 
 * `docs/architecture.md` describes the main runtime components and message flow.
 * `docs/cli_usage.md` documents the CLI commands and examples.
+* `docs/web_ui.md` documents the browser control room and its data flows.
 
 ## Contributing
 

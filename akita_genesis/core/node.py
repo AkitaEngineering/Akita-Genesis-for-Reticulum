@@ -1,8 +1,10 @@
 # akita_genesis/core/node.py
+import json
 import asyncio
 import signal
 import time
 import os
+from pathlib import Path
 from typing import Optional, Dict, Any, List, Set, Callable
 import uuid 
 import platform 
@@ -13,7 +15,8 @@ import RNS # type: ignore[import-untyped] # For Reticulum operations and types
 # FastAPI and Uvicorn for the control API
 from fastapi import FastAPI, HTTPException, Body, Depends, Security # Added Depends, Security
 from fastapi.security.api_key import APIKeyHeader # For API Key security
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from pydantic import SecretStr # For handling API keys securely
@@ -132,6 +135,7 @@ class AkitaGenesisNode:
         self.api_host = api_host or settings.DEFAULT_API_HOST
         self.api_port = api_port or settings.DEFAULT_API_PORT
         self.run_api_server = run_api_server
+        self._webui_root = Path(__file__).resolve().parent.parent / "webui"
 
         # --- Async Control and State ---
         self._shutdown_event = asyncio.Event() # Event to signal graceful shutdown
@@ -173,11 +177,15 @@ class AkitaGenesisNode:
         self.resource_monitor.set_update_callback(self._handle_resource_update)
         self.state_manager.set_on_state_change_callback(self._handle_state_change)
         
-        # Initialize FastAPI app with global API key dependency
+        # Initialize FastAPI app and static UI surface.
         self.api_app = FastAPI(
             title="Akita Genesis Node API", version=settings.APP_VERSION,
             description=f"Control and status API for Akita Node {self.node_name} ({self.node_id})",
-            dependencies=[Depends(get_api_key)] # Apply security to all routes by default
+        )
+        self.api_app.mount(
+            "/ui/assets",
+            StaticFiles(directory=str(self._webui_root / "assets")),
+            name="akita_ui_assets",
         )
         self._setup_api_routes() # Define API endpoints
         self._register_message_handlers() # Register handlers for incoming RNS messages
@@ -189,6 +197,192 @@ class AkitaGenesisNode:
         """Generates a unique (short) ID for the node instance."""
         # Using a portion of UUID for a relatively unique but readable ID.
         return str(uuid.uuid4().hex[:12]) 
+
+    @staticmethod
+    def _normalize_node_status(status: Any) -> str:
+        """Normalizes node statuses to their lowercase string value."""
+        if status is None:
+            return str(StateNodeStatus.UNKNOWN)
+        if isinstance(status, str):
+            return status.lower()
+        if hasattr(status, "value"):
+            return str(status.value).lower()
+        return str(status).lower()
+
+    def _count_nodes_by_status(self, nodes_info: List[StateNodeInfo]) -> Dict[str, int]:
+        """Builds a stable count map for cluster node statuses."""
+        counts = {str(status): 0 for status in StateNodeStatus}
+        for node in nodes_info:
+            normalized_status = self._normalize_node_status(node.status)
+            counts[normalized_status] = counts.get(normalized_status, 0) + 1
+        return counts
+
+    def _build_ui_bootstrap(self) -> Dict[str, Any]:
+        """Returns the browser bootstrap payload embedded into the UI shell."""
+        return {
+            "appName": "Akita Genesis Control Room",
+            "appVersion": settings.APP_VERSION,
+            "nodeName": self.node_name,
+            "nodeId": self.node_id,
+            "clusterName": self.cluster_name,
+            "apiKeyHeaderName": settings.API_KEY_HEADER_NAME,
+            "apiSecured": bool(settings.VALID_API_KEYS),
+            "configuredApiKeyCount": len(settings.VALID_API_KEYS),
+            "defaultRefreshMs": 5000,
+        }
+
+    def _render_ui_html(self) -> str:
+        """Renders the static UI shell with runtime bootstrap data."""
+        index_path = self._webui_root / "index.html"
+        template = index_path.read_text(encoding="utf-8")
+        return template.replace(
+            "__AKITA_UI_BOOTSTRAP__",
+            json.dumps(self._build_ui_bootstrap()),
+        )
+
+    def _build_config_snapshot(self) -> Dict[str, Any]:
+        """Returns a sanitized configuration snapshot for the browser UI."""
+        return {
+            "application": {
+                "app_name_short": settings.APP_NAME_SHORT,
+                "app_version": settings.APP_VERSION,
+                "log_level": settings.LOG_LEVEL,
+                "rns_app_name": settings.RNS_APP_NAME,
+            },
+            "node": {
+                "node_id": self.node_id,
+                "node_name": self.node_name,
+                "cluster_name": self.cluster_name,
+                "capabilities": self.capabilities,
+                "identity_path": self.identity_path,
+                "run_api_server": self.run_api_server,
+            },
+            "network": {
+                "api_host": self.api_host,
+                "api_port": self.api_port,
+                "default_rns_port": settings.DEFAULT_RNS_PORT,
+                "discovery_interval_s": settings.DISCOVERY_INTERVAL_S,
+                "announce_interval_s": settings.ANNOUNCE_INTERVAL_S,
+                "control_api_timeout_s": settings.CONTROL_API_TIMEOUT_S,
+            },
+            "cluster": {
+                "default_cluster_name": settings.DEFAULT_CLUSTER_NAME,
+                "cluster_size": settings.CLUSTER_SIZE,
+                "node_timeout_s": settings.NODE_TIMEOUT_S,
+                "leader_election_timeout_s": settings.LEADER_ELECTION_TIMEOUT_S,
+            },
+            "task_engine": {
+                "default_task_priority": settings.DEFAULT_TASK_PRIORITY,
+                "max_task_queue_size": settings.MAX_TASK_QUEUE_SIZE,
+                "task_processing_interval_s": settings.TASK_PROCESSING_INTERVAL_S,
+                "task_timeout_s": settings.TASK_TIMEOUT_S,
+                "max_task_execution_attempts": settings.MAX_TASK_EXECUTION_ATTEMPTS,
+                "worker_ack_timeout_s": settings.WORKER_ACK_TIMEOUT_S,
+                "worker_processing_timeout_s": settings.WORKER_PROCESSING_TIMEOUT_S,
+            },
+            "security": {
+                "api_secured": bool(settings.VALID_API_KEYS),
+                "api_key_header_name": settings.API_KEY_HEADER_NAME,
+                "configured_api_key_count": len(settings.VALID_API_KEYS),
+            },
+            "storage": {
+                "data_dir": str(settings.DATA_DIR),
+                "sqlite_db_file": str(settings.SQLITE_DB_FILE),
+                "log_file_path": str(settings.LOG_FILE_PATH) if settings.LOG_FILE_PATH else None,
+            },
+        }
+
+    async def _build_dashboard_summary(self) -> Dict[str, Any]:
+        """Aggregates the primary dashboard payload for the browser UI."""
+        nodes_info = await self.state_manager.get_cluster_nodes_info()
+        leader_id = await self.state_manager.get_current_leader_id()
+        local_node_info = await self.state_manager.local_cluster_state.get_node(self.node_id)
+        task_counts = await self.task_manager.count_tasks_by_status()
+        recent_tasks = await self.task_manager.list_tasks(limit=6)
+        recent_events = await self.ledger.get_events(limit=6)
+        available_workers = await self.state_manager.get_available_workers()
+
+        try:
+            from akita_genesis.utils.logger import get_recent_logs
+
+            recent_logs = get_recent_logs(limit=8)
+        except Exception:
+            recent_logs = []
+
+        status_counts = self._count_nodes_by_status(nodes_info)
+        capability_counts: Dict[str, int] = {}
+        for node in nodes_info:
+            for capability in node.capabilities or []:
+                capability_counts[capability] = capability_counts.get(capability, 0) + 1
+
+        busiest_nodes = [
+            {
+                "node_id": node.node_id,
+                "node_name": node.node_name,
+                "status": self._normalize_node_status(node.status),
+                "current_task_count": node.current_task_count,
+                "capabilities": node.capabilities,
+            }
+            for node in sorted(
+                nodes_info,
+                key=lambda item: (item.current_task_count, item.node_id),
+                reverse=True,
+            )[:5]
+        ]
+
+        node_resources = (
+            local_node_info.resources
+            if local_node_info and local_node_info.resources
+            else self.resource_monitor.current_resources
+        )
+
+        return {
+            "generated_at": time.time(),
+            "node": {
+                "node_id": self.node_id,
+                "node_name": self.node_name,
+                "cluster_name": self.cluster_name,
+                "capabilities": self.capabilities,
+                "rns_identity_hex": self.communication_manager.get_node_identity_hex(),
+                "status": self._normalize_node_status(local_node_info.status if local_node_info else None),
+                "is_leader": self.node_id == leader_id,
+                "current_leader_id": leader_id,
+                "current_task_count": local_node_info.current_task_count if local_node_info else 0,
+                "uptime_seconds": time.time() - self.start_time,
+                "resources": node_resources,
+                "api_host": self.api_host,
+                "api_port": self.api_port,
+            },
+            "cluster": {
+                "cluster_name": self.cluster_name,
+                "current_leader_id": leader_id,
+                "total_nodes_known": len(nodes_info),
+                "online_nodes_count": status_counts.get(str(StateNodeStatus.ONLINE), 0),
+                "status_counts": status_counts,
+                "available_worker_count": len(available_workers),
+                "capability_counts": dict(
+                    sorted(capability_counts.items(), key=lambda item: (-item[1], item[0]))
+                ),
+                "busiest_nodes": busiest_nodes,
+                "nodes": [node.model_dump() for node in nodes_info],
+            },
+            "tasks": {
+                "counts": task_counts,
+                "recent": [task.to_dict() for task in recent_tasks],
+            },
+            "events": recent_events,
+            "logs": recent_logs,
+            "security": {
+                "api_secured": bool(settings.VALID_API_KEYS),
+                "api_key_header_name": settings.API_KEY_HEADER_NAME,
+                "configured_api_key_count": len(settings.VALID_API_KEYS),
+            },
+            "links": {
+                "ui": "/ui",
+                "docs": "/docs",
+                "openapi": "/openapi.json",
+            },
+        }
 
     def _register_message_handlers(self):
         """Registers handlers for different RNS message types with the CommunicationManager."""
@@ -809,11 +1003,31 @@ class AkitaGenesisNode:
         """Defines FastAPI routes, applying the API key dependency."""
         api_key_dependency = Depends(get_api_key)
 
+        @self.api_app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+        async def get_ui_shell_route():
+            try:
+                return HTMLResponse(self._render_ui_html())
+            except OSError as exc:
+                log.error(f"Failed to load UI assets: {exc}", exc_info=True)
+                raise HTTPException(status_code=500, detail="UI assets could not be loaded") from exc
+
+        @self.api_app.get("/dashboard", include_in_schema=False)
+        async def redirect_dashboard_route():
+            return RedirectResponse(url="/ui", status_code=307)
+
         # Apply dependency to all routes defined below
         # Use unique function names for API route handlers
         @self.api_app.get("/", tags=["General"], dependencies=[api_key_dependency])
         async def get_root_api_route(): 
-             return { "message": f"Welcome to Akita Genesis Node: {self.node_name}", "node_id": self.node_id, "node_capabilities": self.capabilities, "cluster_name": self.cluster_name, "rns_identity_hex": self.communication_manager.get_node_identity_hex(), "api_docs": "/docs" }
+             return { "message": f"Welcome to Akita Genesis Node: {self.node_name}", "node_id": self.node_id, "node_capabilities": self.capabilities, "cluster_name": self.cluster_name, "rns_identity_hex": self.communication_manager.get_node_identity_hex(), "api_docs": "/docs", "ui": "/ui", "dashboard_summary": "/dashboard/summary" }
+
+        @self.api_app.get("/dashboard/summary", tags=["Dashboard"], dependencies=[api_key_dependency])
+        async def get_dashboard_summary_api_route():
+            return await self._build_dashboard_summary()
+
+        @self.api_app.get("/config", tags=["Configuration"], dependencies=[api_key_dependency])
+        async def get_configuration_api_route():
+            return self._build_config_snapshot()
 
         @self.api_app.get("/status", tags=["Status"], dependencies=[api_key_dependency])
         async def get_node_status_api_route(): 
@@ -822,7 +1036,7 @@ class AkitaGenesisNode:
 
         @self.api_app.get("/cluster/status", tags=["Cluster"], dependencies=[api_key_dependency])
         async def get_cluster_status_api_route():
-             nodes_info = await self.state_manager.get_cluster_nodes_info(); return { "cluster_name": self.cluster_name, "current_leader_id": await self.state_manager.get_current_leader_id(), "total_nodes_known": len(nodes_info), "online_nodes_count": len([n for n in nodes_info if n.status == StateNodeStatus.ONLINE]), "nodes": [node.model_dump() for node in nodes_info] }
+             nodes_info = await self.state_manager.get_cluster_nodes_info(); status_counts = self._count_nodes_by_status(nodes_info); return { "cluster_name": self.cluster_name, "current_leader_id": await self.state_manager.get_current_leader_id(), "total_nodes_known": len(nodes_info), "online_nodes_count": status_counts.get(str(StateNodeStatus.ONLINE), 0), "degraded_nodes_count": status_counts.get(str(StateNodeStatus.DEGRADED), 0), "offline_nodes_count": status_counts.get(str(StateNodeStatus.OFFLINE), 0), "status_counts": status_counts, "nodes": [node.model_dump() for node in nodes_info] }
 
         @self.api_app.post("/tasks/submit", status_code=202, tags=["Tasks"], dependencies=[api_key_dependency])
         async def submit_task_api_route(task_data: Dict[str, Any] = Body(...), priority: int = Body(default=settings.DEFAULT_TASK_PRIORITY)):

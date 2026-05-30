@@ -19,7 +19,7 @@ from akita_genesis.modules.communication import AppAspect
 
 log = setup_logger(__name__)
 
-class NodeStatus(Enum):
+class NodeStatus(str, Enum):
     """Represents the status of a node in the cluster."""
     UNKNOWN = "unknown"
     OFFLINE = "offline"

@@ -1,0 +1,1 @@
+"""Packaged browser UI for the Akita Genesis node control room."""

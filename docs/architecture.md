@@ -70,8 +70,22 @@ The system is primarily composed of modules running within each `AkitaGenesisNod
     * Interacts with the node's FastAPI API, **now requiring an `--api-key` option** for most commands if the node is secured.
     * Includes `logs --follow` to poll logs continuously and `task list` to inspect real task records from the API.
 
-10. **`config.settings`:**
+10. **`webui` (served by `core.node`):**
+    * A packaged browser control room served directly by the node at `/ui`.
+    * Uses a static HTML/CSS/JS shell with runtime bootstrap data embedded by the node.
+    * Polls secured API endpoints like `/dashboard/summary`, `/tasks`, `/logs`, `/ledger`, and `/config`.
+    * Provides a high-information UX for dashboards, cluster members, task submission, live logs, and runtime configuration.
+
+11. **`config.settings`:**
     * Manages configuration, including **`VALID_API_KEYS`** (comma-separated or JSON-array env input), **`MAX_TASK_EXECUTION_ATTEMPTS`**, and worker timeouts.
+
+## UI Security Model
+
+The node now separates the UI shell from the secured data plane:
+
+* `/ui` and `/ui/assets/*` are public so a browser can load the shell without custom headers during navigation.
+* Data and control endpoints remain protected by API-key validation when `VALID_API_KEYS` is configured.
+* The browser UI prompts for a key and sends it in the configured header for subsequent fetches.
 
 ## Communication Flow (Example: Task Submission & Execution - Updated)
 

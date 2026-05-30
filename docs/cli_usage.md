@@ -132,3 +132,16 @@ Or a JSON array:
 ```bash
 export AKITA_VALID_API_KEYS='["key1", "key2", "key3"]'
 ```
+
+## Browser Control Room
+
+The node also serves a browser UI at `/ui`.
+
+Example:
+
+```bash
+python -m akita_genesis.cli.main start --node-name ops-node --cluster-name demo --api-port 8001
+# open http://127.0.0.1:8001/ui
+```
+
+The browser UI uses the same node API underneath. If the node is secured, open the API key dialog in the UI and provide a valid key.

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Akita Genesis Control Room</title>
+    <link rel="stylesheet" href="/ui/assets/styles.css">
+</head>
+<body>
+    <div class="ambient-layer" aria-hidden="true">
+        <div class="ambient-orb orb-a"></div>
+        <div class="ambient-orb orb-b"></div>
+        <div class="ambient-grid"></div>
+    </div>
+
+    <div class="shell">
+        <aside class="sidebar panel" aria-label="Primary navigation">
+            <div class="brand-block">
+                <p class="eyebrow">Akita Genesis</p>
+                <h1>Control Room</h1>
+                <p class="brand-copy">
+                    A live operations cockpit for cluster visibility, task flow, logs, ledger events,
+                    and runtime configuration.
+                </p>
+            </div>
+
+            <div class="brand-metrics">
+                <span class="pill" id="sidebarClusterName">Cluster pending</span>
+                <span class="pill pill-soft" id="sidebarNodeName">Node pending</span>
+            </div>
+
+            <nav class="nav-groups">
+                <div class="nav-group">
+                    <p class="nav-group-label">Observe</p>
+                    <button class="nav-button is-active" data-section="overview" type="button">Dashboard</button>
+                    <button class="nav-button" data-section="cluster" type="button">Cluster</button>
+                    <button class="nav-button" data-section="tasks" type="button">Tasks</button>
+                    <button class="nav-button" data-section="logs" type="button">Logs</button>
+                    <button class="nav-button" data-section="ledger" type="button">Ledger</button>
+                </div>
+                <div class="nav-group">
+                    <p class="nav-group-label">Operate</p>
+                    <button class="nav-button" data-section="configuration" type="button">Configuration</button>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="security-card">
+                    <p class="panel-eyebrow">API Access</p>
+                    <strong id="securityBadge">Waiting for runtime profile</strong>
+                    <p id="securityCopy">The UI shell is ready. Live telemetry will hydrate after the first refresh.</p>
+                </div>
+                <button class="ghost-button" id="openAuthButton" type="button">Manage API Key</button>
+            </div>
+        </aside>
+
+        <div class="workspace">
+            <header class="topbar panel">
+                <div class="topbar-copy">
+                    <p class="eyebrow">Runtime Overview</p>
+                    <h2 id="heroTitle">Preparing node telemetry…</h2>
+                    <p id="heroSubtitle">
+                        The browser console will attach to this node and keep the operational picture current.
+                    </p>
+                </div>
+
+                <div class="toolbar">
+                    <div class="toolbar-status" id="connectionBadge">Shell ready</div>
+                    <label class="toolbar-toggle">
+                        <span>Auto refresh</span>
+                        <input id="autoRefreshToggle" type="checkbox" checked>
+                    </label>
+                    <label class="toolbar-field">
+                        <span>Interval</span>
+                        <select id="refreshIntervalSelect">
+                            <option value="3000">3s</option>
+                            <option value="5000" selected>5s</option>
+                            <option value="10000">10s</option>
+                            <option value="30000">30s</option>
+                        </select>
+                    </label>
+                    <button class="secondary-button" id="refreshButton" type="button">Refresh Now</button>
+                    <button class="primary-button" id="topbarAuthButton" type="button">API Key</button>
+                </div>
+            </header>
+
+            <section class="hero panel">
+                <div class="hero-copy">
+                    <p class="eyebrow">Mission Status</p>
+                    <h3 id="heroNodeLine">Waiting for summary data</h3>
+                    <p id="heroStatusLine">
+                        Open the console, add an API key if required, and this dashboard will hydrate itself.
+                    </p>
+                    <div class="hero-actions">
+                        <button class="primary-button" data-section-target="tasks" type="button">Open Task Console</button>
+                        <button class="secondary-button" data-section-target="logs" type="button">Inspect Logs</button>
+                        <a class="ghost-link" href="/docs" target="_blank" rel="noreferrer">API Docs</a>
+                    </div>
+                </div>
+
+                <div class="hero-grid" id="heroMetricGrid"></div>
+            </section>
+
+            <main class="views">
+                <section class="view is-active" data-section="overview">
+                    <div class="section-header">
+                        <div>
+                            <p class="eyebrow">Command Deck</p>
+                            <h3>Dashboard</h3>
+                            <p class="section-copy">A condensed operational picture of node health, cluster posture, and recent activity.</p>
+                        </div>
+                        <div class="section-submenu">
+                            <button class="subnav-button" data-scroll-target="overview-health" type="button">Health</button>
+                            <button class="subnav-button" data-scroll-target="overview-activity" type="button">Activity</button>
+                            <button class="subnav-button" data-scroll-target="overview-actions" type="button">Actions</button>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-grid">
+                        <section class="panel" id="overview-health">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Health</p>
+                                    <h4>Resource Pulse</h4>
+                                </div>
+                                <span class="panel-meta" id="lastUpdatedLabel">Awaiting first sync</span>
+                            </div>
+                            <div class="gauge-grid" id="healthGaugeGrid"></div>
+                        </section>
+
+                        <section class="panel">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Load Shape</p>
+                                    <h4>Task Distribution</h4>
+                                </div>
+                            </div>
+                            <div id="taskDistribution" class="stack-list"></div>
+                        </section>
+
+                        <section class="panel">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Capabilities</p>
+                                    <h4>Cluster Skills</h4>
+                                </div>
+                            </div>
+                            <div id="capabilityCloud" class="capability-cloud"></div>
+                        </section>
+
+                        <section class="panel" id="overview-activity">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Activity</p>
+                                    <h4>Latest Events</h4>
+                                </div>
+                            </div>
+                            <div id="recentActivityFeed" class="activity-feed"></div>
+                        </section>
+
+                        <section class="panel" id="overview-actions">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Operate</p>
+                                    <h4>Quick Actions</h4>
+                                </div>
+                            </div>
+
+                            <form class="task-submit-form composer" data-form-context="overview">
+                                <label class="input-block">
+                                    <span>Task Payload (JSON)</span>
+                                    <textarea name="taskPayload" rows="7">{
+  "action": "sample",
+  "required_capabilities": []
+}</textarea>
+                                </label>
+                                <div class="composer-grid">
+                                    <label class="input-block">
+                                        <span>Priority</span>
+                                        <input name="taskPriority" type="number" min="1" value="10">
+                                    </label>
+                                    <div class="composer-actions">
+                                        <button class="primary-button" type="submit">Submit Task</button>
+                                        <p class="helper-copy">Lower values are scheduled first.</p>
+                                    </div>
+                                </div>
+                            </form>
+
+                            <div class="quick-actions">
+                                <button class="danger-button" id="shutdownButton" type="button">Request Node Shutdown</button>
+                                <p class="helper-copy">
+                                    Uses the same API key as the rest of the console. A confirmation prompt will appear first.
+                                </p>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+                <section class="view" data-section="cluster">
+                    <div class="section-header">
+                        <div>
+                            <p class="eyebrow">Topology</p>
+                            <h3>Cluster Map</h3>
+                            <p class="section-copy">See leader posture, workload balance, node capabilities, and stale members at a glance.</p>
+                        </div>
+                        <div class="section-submenu">
+                            <button class="subnav-button" data-scroll-target="cluster-highlights" type="button">Highlights</button>
+                            <button class="subnav-button" data-scroll-target="cluster-members" type="button">Members</button>
+                        </div>
+                    </div>
+
+                    <div class="cluster-grid">
+                        <section class="panel" id="cluster-highlights">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Cluster Posture</p>
+                                    <h4>Operational Highlights</h4>
+                                </div>
+                            </div>
+                            <div id="clusterHighlights" class="summary-grid"></div>
+                        </section>
+
+                        <section class="panel table-panel" id="cluster-members">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Members</p>
+                                    <h4>Node Table</h4>
+                                </div>
+                            </div>
+
+                            <div class="table-wrapper">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Node</th>
+                                            <th>Status</th>
+                                            <th>Role</th>
+                                            <th>Tasks</th>
+                                            <th>Capabilities</th>
+                                            <th>Resources</th>
+                                            <th>Last Seen</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="clusterTableBody"></tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+                <section class="view" data-section="tasks">
+                    <div class="section-header">
+                        <div>
+                            <p class="eyebrow">Execution</p>
+                            <h3>Task Console</h3>
+                            <p class="section-copy">Inspect queue state, drill into task payloads, and submit new work from the browser.</p>
+                        </div>
+                        <div class="section-submenu">
+                            <button class="subnav-button" data-scroll-target="task-browser" type="button">Browser</button>
+                            <button class="subnav-button" data-scroll-target="task-composer" type="button">Composer</button>
+                        </div>
+                    </div>
+
+                    <div class="tasks-grid">
+                        <section class="panel table-panel" id="task-browser">
+                            <div class="panel-header panel-header-inline">
+                                <div>
+                                    <p class="panel-eyebrow">Queue Browser</p>
+                                    <h4>Recent Tasks</h4>
+                                </div>
+                                <div class="inline-controls">
+                                    <label class="toolbar-field compact-field">
+                                        <span>Status</span>
+                                        <select id="taskStatusFilter">
+                                            <option value="all">All</option>
+                                            <option value="pending">Pending</option>
+                                            <option value="accepted">Accepted</option>
+                                            <option value="assigned">Assigned</option>
+                                            <option value="worker_ack">Worker Ack</option>
+                                            <option value="processing">Processing</option>
+                                            <option value="completed">Completed</option>
+                                            <option value="failed">Failed</option>
+                                            <option value="timeout">Timeout</option>
+                                            <option value="cancelled">Cancelled</option>
+                                        </select>
+                                    </label>
+                                    <label class="toolbar-field compact-field">
+                                        <span>Limit</span>
+                                        <input id="taskLimitInput" type="number" min="5" max="100" value="12">
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="table-wrapper">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Status</th>
+                                            <th>Priority</th>
+                                            <th>Assigned</th>
+                                            <th>Updated</th>
+                                            <th>Payload</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="taskTableBody"></tbody>
+                                </table>
+                            </div>
+                        </section>
+
+                        <section class="panel" id="task-composer">
+                            <div class="panel-header">
+                                <div>
+                                    <p class="panel-eyebrow">Submission Studio</p>
+                                    <h4>Compose Work</h4>
+                                </div>
+                            </div>
+
+                            <form class="task-submit-form composer" data-form-context="tasks">
+                                <label class="input-block">
+                                    <span>Task Payload (JSON)</span>
+                                    <textarea name="taskPayload" rows="12">{
+  "action": "train-model",
+  "dataset": "images/2026-05",
+  "required_capabilities": ["gpu"],
+  "notes": "Submitted from the web control room"
+}</textarea>
+                                </label>
+                                <div class="composer-grid">
+                                    <label class="input-block">
+                                        <span>Priority</span>
+                                        <input name="taskPriority" type="number" min="1" value="5">
+                                    </label>
+                                    <div class="composer-actions">
+                                        <button class="primary-button" type="submit">Send to Cluster</button>
+                                        <p class="helper-copy">The payload is sent to the node API as `task_data`.</p>
+                                    </div>
+                                </div>
+                            </form>
+                        </section>
+                    </div>
+                </section>
+
+                <section class="view" data-section="logs">
+                    <div class="section-header">
+                        <div>
+                            <p class="eyebrow">Observability</p>
+                            <h3>Log Stream</h3>
+                            <p class="section-copy">Watch recent node activity with level filtering and continuous refresh.</p>
+                        </div>
+                    </div>
+
+                    <section class="panel" id="logs-feed-panel">
+                        <div class="panel-header panel-header-inline">
+                            <div>
+                                <p class="panel-eyebrow">Runtime Logs</p>
+                                <h4>Node Feed</h4>
+                            </div>
+                            <div class="inline-controls">
+                                <label class="toolbar-field compact-field">
+                                    <span>Level</span>
+                                    <select id="logsLevelFilter">
+                                        <option value="all">All</option>
+                                        <option value="DEBUG">DEBUG</option>
+                                        <option value="INFO">INFO</option>
+                                        <option value="WARNING">WARNING</option>
+                                        <option value="ERROR">ERROR</option>
+                                        <option value="CRITICAL">CRITICAL</option>
+                                    </select>
+                                </label>
+                                <label class="toolbar-field compact-field">
+                                    <span>Limit</span>
+                                    <input id="logsLimitInput" type="number" min="20" max="500" value="120">
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="log-feed" id="logsFeed"></div>
+                    </section>
+                </section>
+
+                <section class="view" data-section="ledger">
+                    <div class="section-header">
+                        <div>
+                            <p class="eyebrow">Audit Trail</p>
+                            <h3>Ledger</h3>
+                            <p class="section-copy">Track high-signal operational events with event-type filtering and a scrollable timeline.</p>
+                        </div>
+                    </div>
+
+                    <section class="panel" id="ledger-feed-panel">
+                        <div class="panel-header panel-header-inline">
+                            <div>
+                                <p class="panel-eyebrow">Event Ledger</p>
+                                <h4>Recent Entries</h4>
+                            </div>
+                            <div class="inline-controls">
+                                <label class="toolbar-field compact-field">
+                                    <span>Event Type</span>
+                                    <input id="ledgerEventTypeFilter" type="text" placeholder="e.g. TASK_COMPLETED">
+                                </label>
+                                <label class="toolbar-field compact-field">
+                                    <span>Limit</span>
+                                    <input id="ledgerLimitInput" type="number" min="5" max="100" value="25">
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="timeline" id="ledgerFeed"></div>
+                    </section>
+                </section>
+
+                <section class="view" data-section="configuration">
+                    <div class="section-header">
+                        <div>
+                            <p class="eyebrow">Reference</p>
+                            <h3>Configuration</h3>
+                            <p class="section-copy">A sanitized, grouped snapshot of the node runtime and scheduling configuration.</p>
+                        </div>
+                        <div class="section-submenu">
+                            <button class="subnav-button" data-scroll-target="config-grid" type="button">Groups</button>
+                        </div>
+                    </div>
+
+                    <section class="panel" id="config-grid">
+                        <div class="panel-header">
+                            <div>
+                                <p class="panel-eyebrow">Runtime Configuration</p>
+                                <h4>Effective Settings</h4>
+                            </div>
+                        </div>
+
+                        <div class="config-grid" id="configGroups"></div>
+                    </section>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <div class="modal-shell hidden" id="authModal">
+        <div class="modal-card panel" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+            <div class="modal-header">
+                <div>
+                    <p class="panel-eyebrow">Authentication</p>
+                    <h3 id="authModalTitle">Node API Key</h3>
+                </div>
+                <button class="icon-button" id="closeAuthModalButton" type="button" aria-label="Close API key dialog">×</button>
+            </div>
+            <p id="authModalCopy" class="section-copy">
+                If the node control API is secured, enter a valid key to unlock live telemetry and control actions.
+            </p>
+            <label class="input-block">
+                <span>API Key</span>
+                <input id="apiKeyInput" type="password" autocomplete="off" placeholder="Paste node control API key">
+            </label>
+            <div class="modal-actions">
+                <button class="secondary-button" id="clearApiKeyButton" type="button">Clear Saved Key</button>
+                <button class="ghost-button" id="cancelAuthButton" type="button">Cancel</button>
+                <button class="primary-button" id="saveApiKeyButton" type="button">Save &amp; Refresh</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+    <script>
+        window.AKITA_UI_BOOTSTRAP = __AKITA_UI_BOOTSTRAP__;
+    </script>
+    <script src="/ui/assets/app.js" defer></script>
+</body>
+</html>

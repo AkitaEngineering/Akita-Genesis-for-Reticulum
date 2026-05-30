@@ -30,6 +30,9 @@ setup(
         'Tracker': 'https://github.com/AkitaEngineering/Akita-Genesis-for-Reticulum/issues',
     },
     packages=find_packages(exclude=["tests*", "examples*"]),
+    package_data={
+        'akita_genesis.webui': ['index.html', 'assets/*.css', 'assets/*.js'],
+    },
     include_package_data=True, 
     classifiers=[
         'Development Status :: 3 - Alpha',

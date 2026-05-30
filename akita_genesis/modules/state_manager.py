@@ -920,18 +920,3 @@ class StateManager:
         except Exception as e:
             log.error(f"Failed to persist node info for {node_info.node_id}: {e}", exc_info=True)
 
-
-    async def _trigger_state_change_callback(self):
-        """Invokes the registered state change callback function, if set."""
-        if self._on_state_change_callback:
-            log.debug("Triggering on_state_change_callback.")
-            try:
-                # Pass a fresh copy of the state to the callback to avoid race conditions
-                state_snapshot = await self.local_cluster_state.get_all_nodes() # Get copies
-                leader_snapshot = await self.local_cluster_state.get_leader() # Get copy
-                # Create a temporary ClusterState or pass relevant parts if callback expects full object
-                # For simplicity, passing the main state object (caller should not modify)
-                await self._on_state_change_callback(self.local_cluster_state) 
-            except Exception as e:
-                log.error(f"Error in on_state_change_callback: {e}", exc_info=True)
-

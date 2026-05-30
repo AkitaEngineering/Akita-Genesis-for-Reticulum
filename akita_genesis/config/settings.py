@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, List, Set
 
 from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict # type: ignore
 
 # Base directory of the project
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

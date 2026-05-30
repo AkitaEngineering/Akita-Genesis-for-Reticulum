@@ -43,7 +43,7 @@ class DatabaseManager:
             # Ensure the directory for the database file exists
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             
-            self._db_queue = queue.Queue() # Queue for all DB operations
+            self._db_queue: 'queue.Queue[Any]' = queue.Queue() # Queue for all DB operations
             self._db_thread_stop_event = threading.Event() # Event to signal thread termination
             # Create and start the dedicated database processing thread
             self._db_thread = threading.Thread(target=self._process_queue, daemon=True)
@@ -166,7 +166,7 @@ class DatabaseManager:
             A concurrent.futures.Future object. The caller can await this 
             (using asyncio.wrap_future) to get the result or exception asynchronously.
         """
-        op_future = Future() # Create a Future to track this operation
+        op_future: 'Future[Any]' = Future() # Create a Future to track this operation
         # Put the operation details onto the queue for the DB thread to process
         self._db_queue.put((sql, params, callback, op_future))
         return op_future
@@ -235,12 +235,12 @@ class DatabaseManager:
         log.info("Queueing database schema initialization/verification...")
         
         # Queue all schema statements for execution
-        final_future = Future() # Future to represent completion of the whole batch
+        final_future: 'Future[Any]' = Future() # Future to represent completion of the whole batch
         for i, stmt in enumerate(schema_statements):
             current_future = self.execute(stmt)
             # Link the final_future to the completion of the *last* statement queued
             if i == len(schema_statements) - 1:
-                def _link_future(completed_future, target_future):
+                def _link_future(completed_future: 'Future[Any]', target_future: 'Future[Any]' = final_future) -> None:
                     # Propagate result or exception from the last DDL future to the final_future
                     if completed_future.cancelled():
                         target_future.cancel()
@@ -249,10 +249,10 @@ class DatabaseManager:
                     else:
                         target_future.set_result(completed_future.result())
                 # Add callback to the future of the last statement
-                current_future.add_done_callback(lambda cf, tf=final_future: _link_future(cf, tf))
+                current_future.add_done_callback(_link_future)
 
         # Add a callback to log the final outcome of schema initialization
-        def log_schema_init_done(f):
+        def log_schema_init_done(f: 'Future[Any]') -> None:
             if f.exception():
                 log.error(f"Database schema initialization failed: {f.exception()}")
             else:
@@ -260,7 +260,9 @@ class DatabaseManager:
         final_future.add_done_callback(log_schema_init_done)
 
         # After schema creation finishes, run any post-init migrations (idempotent)
-        final_future.add_done_callback(lambda f: self._db_queue.put(("RUN_MIGRATION", (), None, None)))
+        def _run_migration(f: 'Future[Any]') -> None:
+            self._db_queue.put(("RUN_MIGRATION", (), None, None))
+        final_future.add_done_callback(_run_migration)
 
         return final_future # Return the future representing the completion of the last statement
 

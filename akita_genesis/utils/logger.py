@@ -3,17 +3,18 @@ import logging
 import sys
 import os
 import time
+from typing import Dict, Any, Optional
 
 # Attempt to import settings safely, handle potential circularity during setup
 try:
-    from ..config.settings import settings
+    from ..config.settings import settings # type: ignore
     DEFAULT_LOG_LEVEL = settings.LOG_LEVEL
 except ImportError:
     # Fallback if settings cannot be imported (e.g., during early setup)
     DEFAULT_LOG_LEVEL = os.environ.get("AKITA_LOG_LEVEL", "INFO") 
 
 # Ensure the logger is configured only once per name to avoid duplicate handlers
-_loggers_configured = {}
+_loggers_configured: Dict[str, bool] = {}
 
 def setup_logger(name: str = "akita_genesis", level: str = DEFAULT_LOG_LEVEL) -> logging.Logger:
     """
@@ -90,13 +91,13 @@ class InMemoryLogHandler(logging.Handler):
     Entries are stored as dictionaries with keys: timestamp (float), level, logger, message, module, funcName, lineno.
     The buffer size can be configured via the AKITA_LOG_HISTORY environment variable (default 1000).
     """
-    def __init__(self, capacity: int = None):
+    def __init__(self, capacity: Optional[int] = None):
         super().__init__()
         try:
             capacity = int(os.environ.get("AKITA_LOG_HISTORY", "1000")) if capacity is None else int(capacity)
         except Exception:
             capacity = 1000
-        self._buf = deque(maxlen=capacity)
+        self._buf: 'deque[Dict[str, Any]]' = deque(maxlen=capacity)
         # Use a simple formatter for the stored message text
         self.setFormatter(logging.Formatter("%(message)s"))
 
@@ -116,7 +117,7 @@ class InMemoryLogHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
-    def get_entries(self, limit: int = None, level: str | None = None):
+    def get_entries(self, limit: Optional[int] = None, level: Optional[str] = None):
         """Return recent entries (newest first)."""
         items = list(self._buf)
         if level:
@@ -128,7 +129,7 @@ class InMemoryLogHandler(logging.Handler):
 
 
 # Small module-level holder for the global in-memory handler so it isn't re-created repeatedly
-_in_memory_log_handler: InMemoryLogHandler | None = None
+_in_memory_log_handler: Optional[InMemoryLogHandler] = None
 
 
 def _ensure_inmemory_handler_attached(logger: logging.Logger):

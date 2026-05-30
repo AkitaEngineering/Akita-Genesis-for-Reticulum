@@ -1,0 +1,46 @@
+akita_genesis/utils/logger.py:10: error: Cannot determine type of "settings"  [has-type]
+akita_genesis/utils/logger.py:16: error: Need type annotation for "_loggers_configured" (hint: "_loggers_configured: dict[<type>, <type>] = ...")  [var-annotated]
+akita_genesis/utils/logger.py:93: error: Incompatible default for parameter "capacity" (default has type "None", parameter has type "int")  [assignment]
+akita_genesis/utils/logger.py:93: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+akita_genesis/utils/logger.py:93: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+akita_genesis/utils/logger.py:99: error: Need type annotation for "_buf"  [var-annotated]
+akita_genesis/utils/logger.py:119: error: Incompatible default for parameter "limit" (default has type "None", parameter has type "int")  [assignment]
+akita_genesis/utils/logger.py:119: note: PEP 484 prohibits implicit Optional. Accordingly, mypy has changed its default to no_implicit_optional=True
+akita_genesis/utils/logger.py:119: note: Use https://github.com/hauntsaninja/no_implicit_optional to automatically upgrade your codebase
+akita_genesis/modules/persistence.py:46: error: Need type annotation for "_db_queue"  [var-annotated]
+akita_genesis/modules/persistence.py:169: error: Need type annotation for "op_future"  [var-annotated]
+akita_genesis/modules/persistence.py:238: error: Need type annotation for "final_future"  [var-annotated]
+akita_genesis/modules/persistence.py:252: error: Cannot infer type of lambda  [misc]
+akita_genesis/modules/persistence.py:316: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+akita_genesis/modules/communication.py:2: error: Skipping analyzing "RNS": module is installed, but missing library stubs or py.typed marker  [import-untyped]
+akita_genesis/modules/communication.py:3: error: Skipping analyzing "RNS.vendor.umsgpack": module is installed, but missing library stubs or py.typed marker  [import-untyped]
+akita_genesis/modules/communication.py:3: error: Skipping analyzing "RNS.vendor": module is installed, but missing library stubs or py.typed marker  [import-untyped]
+akita_genesis/modules/communication.py:216: error: Argument 1 to "run_coroutine_threadsafe" has incompatible type "Awaitable[None]"; expected "Coroutine[Any, Any, Never]"  [arg-type]
+akita_genesis/modules/communication.py:222: error: Argument 1 to "run_coroutine_threadsafe" has incompatible type "Awaitable[None]"; expected "Coroutine[Any, Any, Never]"  [arg-type]
+akita_genesis/modules/communication.py:306: error: Argument 1 has incompatible type "Any | None"; expected "bytes"  [arg-type]
+akita_genesis/modules/communication.py:501: error: Name "List" is not defined  [name-defined]
+akita_genesis/modules/communication.py:501: note: Did you forget to import it from "typing"? (Suggestion: "from typing import List")
+akita_genesis/modules/resources.py:2: error: Library stubs not installed for "psutil"  [import-untyped]
+akita_genesis/modules/resources.py:2: note: Hint: "python3 -m pip install types-psutil"
+akita_genesis/modules/resources.py:2: note: (or run "mypy --install-types" to install all missing stub packages)
+akita_genesis/modules/resources.py:15: error: Cannot assign to a type  [misc]
+akita_genesis/modules/resources.py:15: error: Incompatible types in assignment (expression has type "None", variable has type "type[Ledger]")  [assignment]
+akita_genesis/modules/resources.py:16: error: Cannot assign to a type  [misc]
+akita_genesis/modules/resources.py:16: error: Incompatible types in assignment (expression has type "None", variable has type "type[EventType]")  [assignment]
+akita_genesis/modules/state_manager.py:651: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+akita_genesis/modules/state_manager.py:924: error: Name "_trigger_state_change_callback" already defined on line 707  [no-redef]
+akita_genesis/modules/discovery.py:6: error: Skipping analyzing "RNS": module is installed, but missing library stubs or py.typed marker  [import-untyped]
+akita_genesis/core/node.py:11: error: Skipping analyzing "RNS": module is installed, but missing library stubs or py.typed marker  [import-untyped]
+akita_genesis/core/node.py:11: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+akita_genesis/core/node.py:148: error: Name "DiscoveryManager" is not defined  [name-defined]
+akita_genesis/core/node.py:305: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+akita_genesis/core/node.py:653: error: Need type annotation for "logs" (hint: "logs: list[<type>] = ...")  [var-annotated]
+akita_genesis/core/node.py:821: error: Argument 2 to "submit_task_to_system" of "TaskManager" has incompatible type "int | None"; expected "int"  [arg-type]
+akita_genesis/core/node.py:884: error: Cannot infer type of lambda  [misc]
+akita_genesis/cli/main.py:102: error: Item "None" of "Response | None" has no attribute "status_code"  [union-attr]
+akita_genesis/cli/main.py:102: error: Item "None" of "Response | None" has no attribute "reason"  [union-attr]
+akita_genesis/cli/main.py:104: error: Item "None" of "Response | None" has no attribute "json"  [union-attr]
+akita_genesis/cli/main.py:105: error: Item "None" of "Response | None" has no attribute "text"  [union-attr]
+akita_genesis/cli/main.py:107: error: Item "None" of "Response | None" has no attribute "text"  [union-attr]
+akita_genesis/cli/main.py:109: error: Item "None" of "Response | None" has no attribute "status_code"  [union-attr]
+Found 34 errors in 8 files (checked 17 source files)

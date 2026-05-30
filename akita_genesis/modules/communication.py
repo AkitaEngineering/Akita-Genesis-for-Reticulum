@@ -1,9 +1,9 @@
 # akita_genesis/modules/communication.py
-import RNS
-import RNS.vendor.umsgpack as msgpack # Using Reticulum's bundled msgpack
+import RNS # type: ignore
+import RNS.vendor.umsgpack as msgpack # type: ignore
 import asyncio
 import time
-from typing import Callable, Any, Optional, Dict, Union, Tuple, Awaitable # Added Awaitable
+from typing import Callable, Any, Optional, Dict, Union, Tuple, Awaitable, List, Coroutine
 from enum import Enum
 
 # Use absolute imports within the package
@@ -76,10 +76,10 @@ class CommunicationManager:
 
         # Callbacks registry for incoming messages:
         # Format: { AppAspect: { MessageType: async_callback(source_rns_hash, source_akita_node_id, payload) } }
-        self._message_callbacks: Dict[AppAspect, Dict[MessageType, Callable[[bytes, Optional[str], Dict[str,Any]], Awaitable[None]]]] = {} 
+        self._message_callbacks: Dict[AppAspect, Dict[MessageType, Callable[[Optional[bytes], Optional[str], Dict[str,Any]], Coroutine[Any, Any, None]]]] = {} 
         # Callbacks registry for link status changes (optional)
-        self._link_established_callbacks: Dict[AppAspect, Callable[[RNS.Link], Awaitable[None]]] = {}
-        self._link_closed_callbacks: Dict[AppAspect, Callable[[RNS.Link], Awaitable[None]]] = {}
+        self._link_established_callbacks: Dict[AppAspect, Callable[[RNS.Link], Coroutine[Any, Any, None]]] = {}
+        self._link_closed_callbacks: Dict[AppAspect, Callable[[RNS.Link], Coroutine[Any, Any, None]]] = {}
 
         self._rns_running = False # Flag indicating if RNS transport is active
         log.info(f"CommunicationManager initialized with identity path: {self.identity_path}")
@@ -226,14 +226,14 @@ class CommunicationManager:
         log.info(f"Destination {self.destinations[aspect].name} for aspect '{aspect.value}' configured. Type: {'SINGLE' if is_single else 'GROUP'}")
 
 
-    def register_message_handler(self, aspect: AppAspect, msg_type: MessageType, callback: Callable[[bytes, Optional[str], Dict[str, Any]], Awaitable[None]]):
+    def register_message_handler(self, aspect: AppAspect, msg_type: MessageType, callback: Callable[[Optional[bytes], Optional[str], Dict[str, Any]], Coroutine[Any, Any, None]]):
         """
         Registers an asynchronous callback function to handle specific message types received on a given aspect.
 
         Args:
             aspect: The AppAspect the message is expected on.
             msg_type: The MessageType to handle.
-            callback: An async function: `async def handler(source_rns_hash: bytes, source_akita_node_id: Optional[str], payload: Dict[str, Any])`
+            callback: An async function: `async def handler(source_rns_hash: Optional[bytes], source_akita_node_id: Optional[str], payload: Dict[str, Any])`
         """
         if aspect not in self._message_callbacks:
             self._message_callbacks[aspect] = {}

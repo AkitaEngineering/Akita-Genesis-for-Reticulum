@@ -1,5 +1,5 @@
-# akita_genesis/modules/resources.py
-import psutil # Library for retrieving system information
+import psutil # type: ignore
+
 import time
 import json
 from typing import Dict, Any, Optional, Callable, Awaitable # Added Awaitable
@@ -12,8 +12,8 @@ from akita_genesis.config.settings import settings
 try:
     from akita_genesis.modules.ledger import Ledger, EventType 
 except ImportError:
-    Ledger = None # Define as None if import fails (e.g., during setup)
-    EventType = None 
+    Ledger: Any = None # Define as None if import fails (e.g., during setup)
+    EventType: Any = None 
 
 log = setup_logger(__name__)
 

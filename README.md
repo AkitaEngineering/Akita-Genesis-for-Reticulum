@@ -1,160 +1,145 @@
 # Akita Genesis
 
-**Akita Genesis** is a foundational framework for building distributed systems, developed by Akita Engineering (www.akitaengineering.com). It provides core components for node discovery, cluster formation, task management with advanced scheduling, resource monitoring, and inter-node communication, primarily managed via a Command Line Interface (CLI).
+Akita Genesis is a distributed-systems framework built around Reticulum. It provides node discovery, cluster state tracking, task scheduling, resource monitoring, a persistent event ledger, and a CLI/API control surface for operating nodes.
 
-**License:** GPLv3
+License: GPLv3
 
-## Features
+## What It Does
 
-* **Node Discovery:** Utilizes Reticulum for node discovery and presence announcements within a defined application namespace. Nodes announce their capabilities.
-* **Cluster Formation:** Dynamically forms clusters based on discovered nodes sharing a common cluster name. Implements a simple leader election mechanism.
-* **Task Management & Advanced Scheduling:**
-    * Priority-based task queue system.
-    * Leader node delegates tasks to available worker nodes.
-    * **Capability Matching:** Tasks can specify required capabilities (e.g., `gpu`), and the leader assigns them to workers possessing those capabilities.
-    * **Resource-Aware Scheduling:** Leader considers worker load (task count, CPU usage) when assigning tasks.
-* **Fault Tolerance:**
-    * Configurable maximum execution attempts for tasks.
-    * Timeouts for worker acknowledgment and task processing, triggering re-queues or failures.
-* **Resource Monitoring:** Monitors basic CPU, memory, disk, and network usage using `psutil`.
-* **Persistent Ledger:** Maintains a ledger of critical system events using SQLite.
-* **State Management:** Nodes maintain a local view of the cluster state (nodes, leader, status, capabilities, load). Basic state synchronization via announcements.
-* **CLI Control:** Comprehensive Command Line Interface for starting, stopping, monitoring nodes, managing tasks, viewing logs, and inspecting the ledger.
-* **API Security:** Node's HTTP control API can be secured using configurable API keys.
-* **Configuration:** Flexible configuration system using Pydantic settings, loadable from environment variables or `.env` files.
-* **Modular Design:** Organized into distinct Python modules for core functionalities.
+* Discovers nodes over Reticulum and groups them into named clusters.
+* Elects a leader and maintains cluster state, node health, capabilities, and task load.
+* Accepts tasks through the HTTP API or CLI and schedules them by priority, capability, and worker load.
+* Tracks task retries, worker acknowledgement timeouts, and processing timeouts.
+* Exposes node status, cluster status, task state, logs, and ledger events through a CLI-friendly HTTP API.
+* Supports optional API key protection for the control API.
 
 ## Requirements
 
 * Python 3.8+
-* Reticulum (`pip install rns`)
-* psutil (`pip install psutil`)
-* click (`pip install click`)
-* pydantic / pydantic-settings (`pip install pydantic pydantic-settings`)
-* requests (`pip install requests`)
-* rich (`pip install rich`)
-* fastapi / uvicorn (`pip install fastapi "uvicorn[standard]"`)
-* msgpack (`pip install msgpack`)
+* A virtual environment is strongly recommended.
+* Dependencies listed in `requirements.txt`
 
-(See `requirements.txt` for specific versions).
+## Quick Start
 
-## Installation
+1. Clone the repository.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/AkitaEngineering/Akita-Genesis-for-Reticulum
-    cd akita-genesis
-    ```
+```bash
+git clone https://github.com/AkitaEngineering/Akita-Genesis-for-Reticulum
+cd Akita-Genesis-for-Reticulum
+```
 
-2.  **Create and activate a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    ```
+2. Create and activate a virtual environment.
 
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
 
-4.  **Install Akita Genesis CLI:**
-    ```bash
-    pip install .
-    ```
-    Or for development (editable install):
-    ```bash
-    pip install -e .
-    ```
+3. Install runtime and development dependencies.
 
-## CLI Usage
+```bash
+pip install -r requirements.txt -r dev-requirements.txt
+pip install -e .
+```
 
-After installation, the `akita-genesis` command will be available. See `docs/cli_usage.md` for full details.
+4. Confirm the CLI is available.
 
-**Global Options:**
+```bash
+akita-genesis --help
+```
 
-* `--target-node-api <URL>`: Target node API URL (Env: `AKITA_TARGET_NODE_API`).
-* `--api-key <KEY>`: API Key for authentication (Env: `AKITA_API_KEY`). **Required if API keys are configured on the node.**
-* `--debug`: Enable CLI debug logging.
+If you do not want to install the console script yet, you can run the CLI as a module:
 
-**Common Commands:**
-
-* **Start a Node:**
-    ```bash
-    # Start a node with 'gpu' capability
-    akita-genesis start --node-name WorkerGPU --cluster-name MyCluster --capabilities gpu --api-port 8001
-
-    # Start another node
-    akita-genesis start --node-name WorkerCPU --cluster-name MyCluster --api-port 8002
-    ```
-
-* **Check Node Status:**
-    ```bash
-    akita-genesis status --target-node-api http://localhost:8001 --api-key <your_key>
-    ```
-
-* **Check Cluster Status:**
-    ```bash
-    akita-genesis cluster status --target-node-api http://localhost:8002 --api-key <your_key>
-    ```
-
-* **Submit a Task:**
-    ```bash
-    # Submit a task requiring 'gpu'
-    akita-genesis task submit '{"action":"train","data":"img.dat","required_capabilities":["gpu"]}' --api-key <your_key>
-
-    # Submit a general task
-    akita-genesis task submit '{"action":"log","message":"hello"}' --priority 15 --api-key <your_key>
-    ```
-
-* **Check Task Status:**
-    ```bash
-    akita-genesis task status <task_uuid> --api-key <your_key>
-    ```
-
-* **View Logs:**
-    ```bash
-    akita-genesis logs --limit 50 --api-key <your_key>
-    ```
-
-* **View Ledger:**
-    ```bash
-    akita-genesis ledger view --limit 10 --event-type TASK_COMPLETED --api-key <your_key>
-    ```
-
-* **Shutdown Node:**
-    ```bash
-    akita-genesis shutdown --target-node-api http://localhost:8001 --api-key <your_key>
-    ```
+```bash
+python -m akita_genesis.cli.main --help
+```
 
 ## Configuration
 
-Configuration parameters are managed in `akita_genesis/config/settings.py` using Pydantic. Settings can be overridden via environment variables (prefixed with `AKITA_`) or a `.env` file in the project root.
+Settings are loaded from environment variables prefixed with `AKITA_` and from an optional `.env` file in the repository root.
 
-Key settings include:
+Common settings:
 
-* `LOG_LEVEL`, `SQLITE_DB_FILE`, `DATA_DIR`
-* `DEFAULT_NODE_NAME`, `DEFAULT_CLUSTER_NAME`
-* `NODE_TIMEOUT_S`, `LEADER_ELECTION_TIMEOUT_S`
-* `DISCOVERY_INTERVAL_S`, `ANNOUNCE_INTERVAL_S`
-* `DEFAULT_API_HOST`, `DEFAULT_API_PORT`
-* **`VALID_API_KEYS`**: Set of allowed API keys (e.g., `AKITA_VALID_API_KEYS='key1,key2'`). If empty, API is unsecured.
-* `API_KEY_HEADER_NAME`
-* **`MAX_TASK_EXECUTION_ATTEMPTS`**: Max times a task is retried.
-* **`WORKER_ACK_TIMEOUT_S`**: Time leader waits for worker ACK.
-* **`WORKER_PROCESSING_TIMEOUT_S`**: Time leader waits for worker result after ACK.
+* `AKITA_LOG_LEVEL`
+* `AKITA_SQLITE_DB_FILE`
+* `AKITA_DATA_DIR`
+* `AKITA_DEFAULT_CLUSTER_NAME`
+* `AKITA_DEFAULT_API_HOST`
+* `AKITA_DEFAULT_API_PORT`
+* `AKITA_MAX_TASK_EXECUTION_ATTEMPTS`
+* `AKITA_WORKER_ACK_TIMEOUT_S`
+* `AKITA_WORKER_PROCESSING_TIMEOUT_S`
+
+API keys can now be provided in either of these formats:
+
+```bash
+export AKITA_VALID_API_KEYS='key1,key2,key3'
+export AKITA_VALID_API_KEYS='["key1", "key2", "key3"]'
+```
+
+If `AKITA_VALID_API_KEYS` is empty or unset, the HTTP control API is unsecured.
+
+## CLI Overview
+
+Global options:
+
+* `--target-node-api`: Base URL for the node HTTP API.
+* `--api-key`: API key sent in the configured header.
+* `--debug`: Enables debug logging for the CLI.
+
+Common commands:
+
+```bash
+# Start a node
+akita-genesis start --node-name WorkerGPU --cluster-name MyCluster --capabilities gpu --api-port 8001
+
+# Check node and cluster status
+akita-genesis --target-node-api http://127.0.0.1:8001 status
+akita-genesis --target-node-api http://127.0.0.1:8001 cluster status
+
+# Submit and inspect tasks
+akita-genesis task submit '{"action":"train","required_capabilities":["gpu"]}' --priority 5
+akita-genesis task list --status pending --limit 20
+akita-genesis task status <task_id>
+
+# View logs once or follow them continuously
+akita-genesis logs --limit 50
+akita-genesis logs --follow --level error
+
+# Inspect the ledger
+akita-genesis ledger view --limit 20 --event-type TASK_COMPLETED
+```
+
+For a fuller command reference, see `docs/cli_usage.md`.
 
 ## Development
 
-* Install development dependencies: `pip install -r dev-requirements.txt`
-* Run linters/formatters: `flake8 .`, `black .`, `isort .`
-* Run type checker: `mypy akita_genesis`
-* Run tests (once implemented): `pytest`
+Run tests:
+
+```bash
+python -m pytest -q
+```
+
+Run type checks:
+
+```bash
+python -m mypy akita_genesis tests
+```
+
+Optional style tools:
+
+```bash
+python -m flake8 akita_genesis tests
+python -m black --check .
+python -m isort --check-only .
+```
+
+## Documentation
+
+* `docs/architecture.md` describes the main runtime components and message flow.
+* `docs/cli_usage.md` documents the CLI commands and examples.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit pull requests or open issues to report bugs or suggest new features. Ensure contributions adhere to the existing coding style (PEP 8, Black, isort) and include tests where appropriate.
-
----
-Akita Engineering
-www.akitaengineering.com
+Contributions should keep behavior covered by tests and update documentation when CLI or API behavior changes.
 

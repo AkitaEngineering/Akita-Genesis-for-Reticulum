@@ -1,10 +1,11 @@
 # akita_genesis/config/settings.py
+import json
 import os
 from pathlib import Path
-from typing import Optional, List, Set
+from typing import Annotated, Any, Optional, List, Set
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict # type: ignore
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict # type: ignore
 
 # Base directory of the project
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -49,9 +50,9 @@ class AppSettings(BaseSettings):
     DEFAULT_API_PORT: int = Field(default=8000, ge=1024, le=65535, description="Default port for the node's control API.")
     CONTROL_API_TIMEOUT_S: int = Field(default=10, description="Timeout for API requests from CLI to node.")
     # --- NEW: API Security ---
-    # Use SecretStr to prevent accidental logging of keys
-    # Set via environment variable AKITA_VALID_API_KEYS='key1,key2' or in .env
-    VALID_API_KEYS: Set[SecretStr] = Field(default_factory=set, description="Set of valid API keys for accessing the node's API.")
+    # Use SecretStr to prevent accidental logging of keys.
+    # Accept either a comma-separated string or a JSON array in the environment.
+    VALID_API_KEYS: Annotated[Set[SecretStr], NoDecode] = Field(default_factory=set, description="Set of valid API keys for accessing the node's API.")
     API_KEY_HEADER_NAME: str = Field(default="X-API-Key", description="HTTP Header name for the API key.")
 
     # Task Management Settings
@@ -65,6 +66,40 @@ class AppSettings(BaseSettings):
 
     # Resource Monitoring
     RESOURCE_MONITOR_INTERVAL_S: int = Field(default=60, ge=10, description="Interval for updating and broadcasting resource metrics.")
+
+    @field_validator("VALID_API_KEYS", mode="before")
+    @classmethod
+    def parse_valid_api_keys(cls, value: Any) -> Set[SecretStr]:
+        """Accept comma-separated or JSON-array API key definitions from env/.env."""
+        if value in (None, "", [], (), set()):
+            return set()
+
+        if isinstance(value, str):
+            stripped_value = value.strip()
+            if not stripped_value:
+                return set()
+            if stripped_value.startswith("["):
+                try:
+                    value = json.loads(stripped_value)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "VALID_API_KEYS must be a comma-separated string or JSON array."
+                    ) from exc
+            else:
+                value = [item.strip() for item in stripped_value.split(",")]
+
+        if isinstance(value, (list, tuple, set)):
+            parsed_keys: Set[SecretStr] = set()
+            for item in value:
+                if isinstance(item, SecretStr):
+                    secret_value = item.get_secret_value().strip()
+                else:
+                    secret_value = str(item).strip()
+                if secret_value:
+                    parsed_keys.add(SecretStr(secret_value))
+            return parsed_keys
+
+        raise ValueError("VALID_API_KEYS must be a comma-separated string or iterable of strings.")
 
     # Make sure data directory exists
     def __init__(self, **values):

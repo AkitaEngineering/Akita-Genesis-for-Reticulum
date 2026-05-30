@@ -1,17 +1,22 @@
 # akita_genesis/utils/logger.py
+import importlib
 import logging
 import sys
 import os
 import time
 from typing import Dict, Any, Optional
 
+DEFAULT_LOG_LEVEL = os.environ.get("AKITA_LOG_LEVEL", "INFO")
+loaded_settings: Any = None
+
 # Attempt to import settings safely, handle potential circularity during setup
 try:
-    from ..config.settings import settings # type: ignore
-    DEFAULT_LOG_LEVEL = settings.LOG_LEVEL
+    settings_module = importlib.import_module("akita_genesis.config.settings")
+    loaded_settings = getattr(settings_module, "settings", None)
+    DEFAULT_LOG_LEVEL = str(getattr(loaded_settings, "LOG_LEVEL", DEFAULT_LOG_LEVEL))
 except ImportError:
     # Fallback if settings cannot be imported (e.g., during early setup)
-    DEFAULT_LOG_LEVEL = os.environ.get("AKITA_LOG_LEVEL", "INFO") 
+    pass
 
 # Ensure the logger is configured only once per name to avoid duplicate handlers
 _loggers_configured: Dict[str, bool] = {}
@@ -55,14 +60,11 @@ def setup_logger(name: str = "akita_genesis", level: str = DEFAULT_LOG_LEVEL) ->
             logger.addHandler(console_handler)
 
             # Add File Handler based on settings if needed
-            try:
-                log_file_path = getattr(settings, 'LOG_FILE_PATH', None)
-                if log_file_path:
-                    file_handler = logging.FileHandler(log_file_path)
-                    file_handler.setFormatter(formatter)
-                    logger.addHandler(file_handler)
-            except NameError:
-                pass  # settings not imported
+            log_file_path = getattr(loaded_settings, 'LOG_FILE_PATH', None)
+            if log_file_path:
+                file_handler = logging.FileHandler(log_file_path)
+                file_handler.setFormatter(formatter)
+                logger.addHandler(file_handler)
 
         # Mark this logger name as configured
         _loggers_configured[name] = True

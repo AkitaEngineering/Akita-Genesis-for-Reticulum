@@ -3,7 +3,7 @@ import asyncio
 import time
 from typing import Callable, Any, Optional, Dict, Awaitable # Added Awaitable
 
-import RNS # For RNS.prettyhexrep if needed
+import RNS # type: ignore[import-untyped] # For RNS.prettyhexrep if needed
 
 # Use absolute imports within the package
 from akita_genesis.config.settings import settings

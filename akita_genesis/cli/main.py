@@ -99,15 +99,19 @@ def make_api_request(ctx, method: str, endpoint: str, **kwargs) -> dict:
                 raise # Re-raise if not OK and not JSON
         return {} # Return empty dict if no content (e.g. for 202 responses)
     except requests.exceptions.HTTPError as e:
-        cli_log.error(f"API Error: {e.response.status_code} {e.response.reason} for URL: {url}")
-        try:
-            error_detail = e.response.json()
-            cli_log.error(f"Detail: {error_detail.get('detail', e.response.text)}")
-        except json.JSONDecodeError:
-            cli_log.error(f"Raw response: {e.response.text}")
-        # Specifically handle 403 Forbidden for API key issues
-        if e.response.status_code == 403:
-             cli_log.error("Received 403 Forbidden. Check if your API key (--api-key or AKITA_API_KEY) is correct.")
+        error_response = e.response
+        status_code = error_response.status_code if error_response is not None else "N/A"
+        reason = error_response.reason if error_response is not None else "Unknown"
+        cli_log.error(f"API Error: {status_code} {reason} for URL: {url}")
+        if error_response is not None:
+            try:
+                error_detail = error_response.json()
+                cli_log.error(f"Detail: {error_detail.get('detail', error_response.text)}")
+            except json.JSONDecodeError:
+                cli_log.error(f"Raw response: {error_response.text}")
+            # Specifically handle 403 Forbidden for API key issues
+            if error_response.status_code == 403:
+                 cli_log.error("Received 403 Forbidden. Check if your API key (--api-key or AKITA_API_KEY) is correct.")
         raise click.Abort()
     except requests.exceptions.ConnectionError as e:
         cli_log.error(f"Connection Error: Could not connect to {url}. Is the node running and API accessible?")
@@ -428,12 +432,16 @@ def ledger_view(ctx, limit, offset, event_type):
 @cli_app.command("logs")
 @click.option('--limit', default=100, type=int, help="Number of log entries to fetch.")
 @click.option('--level', default=None, help="Filter logs by level (e.g., INFO, ERROR) - if supported by node.")
-@click.option('--follow', '-f', is_flag=True, help="Follow logs in real-time (not implemented yet).")
+@click.option('--follow', '-f', is_flag=True, help="Follow logs in real-time by polling the node API.")
 @click.pass_context
 def logs_cmd(ctx, limit, level, follow):
     """Fetches logs from the target node."""
     console = Console(theme=log_theme) # Apply theme for highlighting
     log_highlighter = LogHighlighter()
+
+    endpoint = f"/logs?limit={limit}"
+    if level:
+        endpoint += f"&level={level.upper()}"
 
     if follow:
         console.print("[green]Following logs (polling every 1s). Press Ctrl+C to stop.[/green]")
@@ -468,10 +476,6 @@ def logs_cmd(ctx, limit, level, follow):
         except KeyboardInterrupt:
             console.print("[yellow]Stopped following logs.[/yellow]")
             return
-
-    endpoint = f"/logs?limit={limit}"
-    if level:
-        endpoint += f"&level={level.upper()}"
     
     cli_log.debug(f"Fetching logs from {ctx.obj['TARGET_NODE_API']} with endpoint {endpoint}")
     result = make_api_request(ctx, "GET", endpoint) # make_api_request handles key

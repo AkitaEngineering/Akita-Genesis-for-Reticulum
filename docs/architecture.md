@@ -49,7 +49,7 @@ The system is primarily composed of modules running within each `AkitaGenesisNod
 5.  **`modules.task_manager.TaskManager`:**
     * Manages the lifecycle of tasks.
     * Interacts with the database to store/retrieve task info, including **execution attempts**.
-    * Provides methods for submitting tasks, querying status, and updating task states.
+    * Provides methods for submitting tasks, querying status, listing tasks with pagination/filtering, and updating task states.
     * Includes logic for task re-queuing (e.g., `re_queue_stale_assigned_task`).
 
 6.  **`modules.ledger.Ledger`:**
@@ -68,10 +68,10 @@ The system is primarily composed of modules running within each `AkitaGenesisNod
     * The command-line interface (`click`, `rich`).
     * Provides commands to `start` nodes (now including `--capabilities`).
     * Interacts with the node's FastAPI API, **now requiring an `--api-key` option** for most commands if the node is secured.
-    * Includes `logs` command to fetch logs via API.
+    * Includes `logs --follow` to poll logs continuously and `task list` to inspect real task records from the API.
 
 10. **`config.settings`:**
-    * Manages configuration, including **`VALID_API_KEYS`**, **`MAX_TASK_EXECUTION_ATTEMPTS`**, and worker timeouts.
+    * Manages configuration, including **`VALID_API_KEYS`** (comma-separated or JSON-array env input), **`MAX_TASK_EXECUTION_ATTEMPTS`**, and worker timeouts.
 
 ## Communication Flow (Example: Task Submission & Execution - Updated)
 

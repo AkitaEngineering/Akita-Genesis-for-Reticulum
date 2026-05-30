@@ -2,18 +2,17 @@ import psutil # type: ignore
 
 import time
 import json
-from typing import Dict, Any, Optional, Callable, Awaitable # Added Awaitable
+from typing import TYPE_CHECKING, Dict, Any, Optional, Callable, Awaitable # Added Awaitable
 import asyncio
 
 # Use absolute imports within the package
 from akita_genesis.utils.logger import setup_logger
 from akita_genesis.config.settings import settings
-# Import Ledger and EventType for optional logging, handle potential circularity if needed
-try:
-    from akita_genesis.modules.ledger import Ledger, EventType 
-except ImportError:
-    Ledger: Any = None # Define as None if import fails (e.g., during setup)
-    EventType: Any = None 
+
+if TYPE_CHECKING:
+    from akita_genesis.modules.ledger import Ledger
+else:
+    Ledger = Any
 
 log = setup_logger(__name__)
 

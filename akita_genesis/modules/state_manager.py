@@ -46,10 +46,11 @@ class NodeInfo(pydantic.BaseModel):
     resources: Optional[Dict[str, Any]] = None # Latest resource metrics snapshot
     # Field to track current task load or capability, for more advanced scheduling
     current_task_count: int = 0 # Example: number of tasks currently assigned
-    capabilities: List[str] = [] # Example: ['gpu_processing', 'fast_io']
+    capabilities: List[str] = pydantic.Field(default_factory=list) # Example: ['gpu_processing', 'fast_io']
 
-    class Config:
-        use_enum_values = True # Serialize enums to their string values (e.g., "ONLINE")
+    model_config = pydantic.ConfigDict(
+        use_enum_values=True,
+    )
 
     def update_from(self, other: 'NodeInfo'):
         """

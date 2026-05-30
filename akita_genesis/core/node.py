@@ -3,12 +3,12 @@ import asyncio
 import signal
 import time
 import os
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, Dict, Any, List, Set, Callable
 import uuid 
 import platform 
 import random # For worker selection if multiple with same load
 
-import RNS # For Reticulum operations and types
+import RNS # type: ignore[import-untyped] # For Reticulum operations and types
 
 # FastAPI and Uvicorn for the control API
 from fastapi import FastAPI, HTTPException, Body, Depends, Security # Added Depends, Security
@@ -27,10 +27,29 @@ from akita_genesis.modules.resources import ResourceMonitor
 from akita_genesis.modules.tasks import TaskManager, Task, TaskStatus 
 from akita_genesis.modules.state_manager import StateManager, NodeInfo as StateNodeInfo, NodeStatus as StateNodeStatus, ClusterState
 from akita_genesis.modules.communication import CommunicationManager, AppAspect, MessageType
+from akita_genesis.modules.discovery import DiscoveryManager
 
 # --- API Key Security ---
 # Define the API key header based on settings
 api_key_header = APIKeyHeader(name=settings.API_KEY_HEADER_NAME, auto_error=False)
+
+
+def _coerce_task_priority(priority: Any, source: str) -> int:
+    """Normalizes task priority values coming from API or network payloads."""
+    if priority is None or isinstance(priority, bool):
+        if priority is not None:
+            log.warning(
+                f"Invalid boolean task priority received from {source}: {priority}. Using default {settings.DEFAULT_TASK_PRIORITY}."
+            )
+        return settings.DEFAULT_TASK_PRIORITY
+
+    try:
+        return int(priority)
+    except (TypeError, ValueError):
+        log.warning(
+            f"Invalid task priority received from {source}: {priority}. Using default {settings.DEFAULT_TASK_PRIORITY}."
+        )
+        return settings.DEFAULT_TASK_PRIORITY
 
 async def get_api_key(api_key: str = Security(api_key_header)):
     """
@@ -630,7 +649,10 @@ class AkitaGenesisNode:
 
         log.info(f"Leader received task submission via RNS from {source_akita_node_id or 'Unknown'}: {str(payload.get('task_data'))[:100]}")
         task_data = payload.get("task_data")
-        priority = payload.get("priority", settings.DEFAULT_TASK_PRIORITY)
+        priority = _coerce_task_priority(
+            payload.get("priority"),
+            source=f"RNS task submission from {source_akita_node_id or 'unknown node'}",
+        )
         task_id_in_payload = payload.get("task_id") # Allow client-provided ID
 
         if not task_data:
@@ -650,7 +672,7 @@ class AkitaGenesisNode:
         # Log fetching via RNS is not implemented as direct RNS request-response for CLI is complex.
         log.info(f"Node {self.node_id} received log fetch request via RNS from {requester_akita_node_id} / {RNS.prettyhexrep(source_rns_hash)}.")
         # No logs returned as RNS log fetching is not implemented
-        logs = []
+        logs: List[Dict[str, Any]] = []
         log_payload = {"node_id": self.node_id, "logs": logs}
         log.warning(f"Log fetching via RNS is not implemented. Would need reply mechanism. Payload: {log_payload}")
         # Cannot easily reply without a Link object from the request or a predefined reply path.
@@ -803,8 +825,9 @@ class AkitaGenesisNode:
              nodes_info = await self.state_manager.get_cluster_nodes_info(); return { "cluster_name": self.cluster_name, "current_leader_id": await self.state_manager.get_current_leader_id(), "total_nodes_known": len(nodes_info), "online_nodes_count": len([n for n in nodes_info if n.status == StateNodeStatus.ONLINE]), "nodes": [node.model_dump() for node in nodes_info] }
 
         @self.api_app.post("/tasks/submit", status_code=202, tags=["Tasks"], dependencies=[api_key_dependency])
-        async def submit_task_api_route(task_data: Dict[str, Any] = Body(...), priority: Optional[int] = Body(default=settings.DEFAULT_TASK_PRIORITY)):
-            log.info(f"API: Received task submission: {str(task_data)[:100]}, priority: {priority}")
+        async def submit_task_api_route(task_data: Dict[str, Any] = Body(...), priority: int = Body(default=settings.DEFAULT_TASK_PRIORITY)):
+            priority_value = _coerce_task_priority(priority, source="HTTP API task submission")
+            log.info(f"API: Received task submission: {str(task_data)[:100]}, priority: {priority_value}")
             is_leader = await self.state_manager.is_current_node_leader()
             if not is_leader:
                 # Attempt to forward to leader if not leader
@@ -812,13 +835,13 @@ class AkitaGenesisNode:
                 if leader_node and leader_node.address_hex:
                     log.info(f"Forwarding task to leader {leader_node.node_id} at {leader_node.address_hex}")
                     task_id_for_payload = str(uuid.uuid4()) # Generate ID for tracking
-                    payload_to_leader = { "task_id": task_id_for_payload, "task_data": task_data, "priority": priority, "original_submitter_node_id": self.node_id }
+                    payload_to_leader = { "task_id": task_id_for_payload, "task_data": task_data, "priority": priority_value, "original_submitter_node_id": self.node_id }
                     sent = await self.communication_manager.send_message( destination_rns_hash=RNS.hexrep_to_bytes(leader_node.address_hex), aspect=AppAspect.TASK_MANAGEMENT, message_type=MessageType.TASK_SUBMIT_TO_LEADER, payload=payload_to_leader, source_akita_node_id=self.node_id )
                     if sent: return {"message": "Task forwarded to leader", "task_id": task_id_for_payload, "status": "forwarded_to_leader"}
                     else: log.error("Failed to forward task to leader. Submitting locally as fallback.")
                 else: log.warning("No leader found or leader has no RNS address. Submitting task locally.")
             # Local submission if leader or forwarding failed
-            task = await self.task_manager.submit_task_to_system( task_data, priority, submitted_by_node_id=self.node_id ) # Submitted via this node's API
+            task = await self.task_manager.submit_task_to_system( task_data, priority_value, submitted_by_node_id=self.node_id ) # Submitted via this node's API
             if task: return {"message": "Task submitted to system", "task_id": task.id, "status": str(task.status)}
             else: raise HTTPException(status_code=500, detail="Failed to submit task to system")
 
@@ -829,15 +852,31 @@ class AkitaGenesisNode:
              raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
             
         @self.api_app.get("/tasks", tags=["Tasks"], dependencies=[api_key_dependency])
-        async def list_tasks_api_route(status: Optional[str] = None, limit: int = 20):
-             # Simplified list logic (as before)
+        async def list_tasks_api_route(status: Optional[str] = None, limit: int = 20, offset: int = 0):
+            if limit < 1:
+                raise HTTPException(status_code=400, detail="limit must be >= 1")
+            if offset < 0:
+                raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+            task_status_enum: Optional[TaskStatus] = None
             if status:
-                try: task_status_enum = TaskStatus(status.lower()); tasks_dict = await self.task_manager.count_tasks_by_status(task_status_enum); return {"status_filter": str(task_status_enum), "tasks_found_count": tasks_dict.get(str(task_status_enum),0) , "detail": "Listing actual tasks by arbitrary status not fully implemented yet."}
-                except ValueError: raise HTTPException(status_code=400, detail=f"Invalid task status: {status}")
-            else: 
-                # Fetch assignable tasks as an example list
-                pending_tasks = await self.task_manager.get_tasks_for_assignment(limit=limit); 
-                return {"tasks": [t.to_dict() for t in pending_tasks]}
+                try:
+                    task_status_enum = TaskStatus(status.lower())
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"Invalid task status: {status}") from exc
+
+            tasks = await self.task_manager.list_tasks(
+                status=task_status_enum,
+                limit=limit,
+                offset=offset,
+            )
+            return {
+                "tasks": [task.to_dict() for task in tasks],
+                "count": len(tasks),
+                "limit": limit,
+                "offset": offset,
+                "status_filter": str(task_status_enum) if task_status_enum else None,
+            }
 
         @self.api_app.get("/ledger", tags=["Ledger"], dependencies=[api_key_dependency])
         async def get_ledger_entries_api_route(limit: int = 20, offset: int = 0, event_type: Optional[str] = None):
@@ -876,12 +915,18 @@ async def run_node_async(node_instance: AkitaGenesisNode):
         # Give tasks a moment to clean up after stop() returns
         await asyncio.sleep(0.5) 
 
+    def make_signal_handler(sig_to_handle: signal.Signals) -> Callable[[], None]:
+        def handler() -> None:
+            asyncio.create_task(initiate_shutdown(sig_to_handle))
+
+        return handler
+
     # Register signal handlers
     for sig in (signal.SIGINT, signal.SIGTERM):
         # Ensure signal handler is added only once if run multiple times
         # loop.remove_signal_handler(sig) # Might be needed if loop persists across runs
         try:
-            loop.add_signal_handler( sig, lambda s=sig: asyncio.create_task(initiate_shutdown(s)) )
+            loop.add_signal_handler(sig, make_signal_handler(sig))
         except ValueError: # Handler might already be added from a previous run in interactive session
             log.debug(f"Signal handler for {sig.name} likely already added.")
         except NotImplementedError: # Windows might not support add_signal_handler for all signals

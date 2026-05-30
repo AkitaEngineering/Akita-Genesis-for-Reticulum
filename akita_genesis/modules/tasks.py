@@ -91,6 +91,7 @@ class Task:
     def from_db_row(cls, row: Any) -> 'Task': # sqlite3.Row or similar
         """Creates a Task object from a database row."""
         # Assuming 'execution_attempts' and 'submitted_by_node_id' columns exist in the tasks table schema
+        row_keys = set(row.keys()) if hasattr(row, "keys") else set()
         return cls(
             task_id=row["id"],
             data=json.loads(row["data"]) if row["data"] else {},
@@ -100,8 +101,8 @@ class Task:
             assigned_to_node_id=row["assigned_to_node_id"],
             result=json.loads(row["result"]) if row["result"] else None,
             last_updated=row["last_updated"],
-            submitted_by_node_id=row.get("submitted_by_node_id"), # Use .get for potential missing column
-            execution_attempts=row.get("execution_attempts", 0) # Use .get with default
+            submitted_by_node_id=row["submitted_by_node_id"] if "submitted_by_node_id" in row_keys else None,
+            execution_attempts=row["execution_attempts"] if "execution_attempts" in row_keys else 0,
         )
 
 
@@ -418,6 +419,41 @@ class TaskManager:
             return [Task.from_db_row(row) for row in rows]
         except Exception as e:
             log.error(f"Failed to retrieve tasks for worker {worker_node_id}: {e}", exc_info=True)
+            return []
+
+    async def list_tasks(
+        self,
+        status: Optional[TaskStatus] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Task]:
+        """Lists tasks, optionally filtered by status, ordered by most recently updated."""
+        if status is None:
+            sql = """
+                SELECT id, submit_time, priority, data, status, assigned_to_node_id,
+                       result, last_updated, submitted_by_node_id, execution_attempts
+                FROM tasks
+                ORDER BY last_updated DESC, priority ASC, submit_time ASC
+                LIMIT ? OFFSET ?
+            """
+            params: Tuple[Any, ...] = (limit, offset)
+        else:
+            sql = """
+                SELECT id, submit_time, priority, data, status, assigned_to_node_id,
+                       result, last_updated, submitted_by_node_id, execution_attempts
+                FROM tasks
+                WHERE status = ?
+                ORDER BY last_updated DESC, priority ASC, submit_time ASC
+                LIMIT ? OFFSET ?
+            """
+            params = (str(status), limit, offset)
+
+        try:
+            future = self.db.execute(sql, params)
+            rows = await asyncio.wrap_future(future)
+            return [Task.from_db_row(row) for row in rows]
+        except Exception as e:
+            log.error(f"Failed to list tasks (status={status}, limit={limit}, offset={offset}): {e}", exc_info=True)
             return []
 
     async def count_tasks_by_status(self, status: Optional[TaskStatus] = None) -> Dict[str, int]:
